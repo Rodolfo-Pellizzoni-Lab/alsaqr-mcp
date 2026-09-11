@@ -13,22 +13,45 @@
   "hardware": "~/he-soc/hardware",
   "software": "~/he-soc/software",
   "vivado_settings": "/tools/Xilinx/Vivado/2024.2/settings64.sh",
-  "tb_defines": ["XSIM_NO_AXI_DRV", "XSIM_L2_PRELOAD", "XSIM_L3_FLOW"],
+  "tb_defines": [
+    "XSIM_NO_AXI_DRV",
+    "XSIM_L2_PRELOAD",
+    "XSIM_L3_FLOW"
+  ],
   "recompile_defines": {
-    "host/host_domain.sv": ["XSIM_SIM_DRAM"]
+    "host/host_domain.sv": [
+      "XSIM_SIM_DRAM"
+    ]
   },
   "xelab_generics": {
-    "USE_S25FS256S_MODEL": 0, "USE_24FC1025_MODEL": 0, "USE_SDIO": 0,
-    "USE_SDVT_CPI": 0, "USE_CAN": 0, "USE_ETHERNET": 0, "USE_USART": 0
+    "USE_S25FS256S_MODEL": 0,
+    "USE_24FC1025_MODEL": 0,
+    "USE_SDIO": 0,
+    "USE_SDVT_CPI": 0,
+    "USE_CAN": 0,
+    "USE_ETHERNET": 0,
+    "USE_USART": 0
   },
   "plusargs": {
-    "CORE_ID": "0", "CL_STRING": "none", "OT_SRAM": "none", "OT_FLASH": "none",
-    "OT_CLUSTER": "none", "BOOTMODE": "0", "UVM_NO_RELNOTES": "", "MAX_CYCLES": "10000000",
+    "CORE_ID": "0",
+    "CL_STRING": "none",
+    "OT_SRAM": "none",
+    "OT_FLASH": "none",
+    "OT_CLUSTER": "none",
+    "BOOTMODE": "0",
+    "UVM_NO_RELNOTES": "",
+    "MAX_CYCLES": "10000000",
     "UVM_TESTNAME": "core_test"
   },
   "memory_map": {
-    "l2":  {"base": "0x1C000000", "size": "0x8000"},
-    "l3":  {"base": "0x80000000", "size": "0x20000000"},
+    "sram": {
+      "base": "0x1C000000",
+      "size": "0x8000"
+    },
+    "dram": {
+      "base": "0x80000000",
+      "size": "0x20000000"
+    },
     "entry": "0x80000000"
   },
   "stall_idle_s": 180,

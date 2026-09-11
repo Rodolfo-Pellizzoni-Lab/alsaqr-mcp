@@ -14,7 +14,7 @@ from .config import Config, load
 from .session import debug_snapshot_name, debug_snapshot_ready, _generics, _plusargs, _tb_opts
 from .status import run_dir, load_state, _watchdog, _scan_stdout
 
-RING_THRESHOLD = 3000  # process executions in the trace window that no normal activity reaches
+BUSY_THRESHOLD = 3000  # executions of one process in the window; normal activity is a few hundred
 
 
 def _err(error, fix, **extra):
@@ -108,7 +108,7 @@ def _block_writes(path: Path, line: int) -> dict:
         if w not in seen and w not in ("automatic", "int", "logic"):
             seen.add(w)
             vars_.append(w)
-    return {"block_line": start + 1, "block_end": j + 1, "written_vars": vars_}
+    return {"block_line": start + 1, "block_end": j + 1, "variables_written": vars_}
 
 
 def _override_or_repo(cfg: Config, src: str) -> Path:
@@ -141,30 +141,32 @@ def _analyse(cfg: Config, td: Path, st: dict) -> dict:
             procs[pending] += 1
     top = procs.most_common(12)
     cycles = max(1, int(st.get("window_ns", 700)) // 10)  # SoC clock is ~10 ns: a process runs at most a few times per cycle
-    kind = ("comb_ring" if top and top[0][1] >= RING_THRESHOLD and top[0][1] > 20 * cycles
-            else ("deadlock_or_idle" if total else "unknown"))
+    kind = ("busy_loop" if top and top[0][1] >= BUSY_THRESHOLD and top[0][1] > 20 * cycles
+            else ("idle" if total else "unknown"))
     def split_fl(fl):
         f, _, ln = fl.rpartition(":")
         return f, (int(ln) if ln.isdigit() else None)
     out = {"kind": kind, "events_in_window": total,
+           "kinds": {"busy_loop": "a few processes execute over and over without simulated time advancing",
+                     "idle": "almost nothing executes: the design is waiting for a signal that never comes"},
            "top_processes": [{"instance": p, "count": c, "file": split_fl(proc_line.get(p, ""))[0],
                               "line": split_fl(proc_line.get(p, ""))[1]} for p, c in top]}
-    if kind == "comb_ring":
+    if kind == "busy_loop":
         f, ln = split_fl(proc_line.get(top[0][0], ""))
         blk = _block_writes(Path(f), ln) if f and ln else {}
         rel = f.split("/overrides/", 1)[-1] if "/overrides/" in f else f.split("/hardware/", 1)[-1]
-        out["suggestion"] = {
-            "instance": top[0][0], "file": f, "repo_relative": rel, "override_path": str(cfg.overrides / rel), **blk,
-            "partner_blocks": [{"instance": p, "file": split_fl(proc_line.get(p, ""))[0], "line": split_fl(proc_line.get(p, ""))[1]}
-                               for p, c in top[1:4] if c > 20 * cycles],
-            "fix": "these blocks re-trigger each other through transient default-then-override writes; rewrite the "
-                   "always_comb so every listed variable is assigned once at the end (comb_fix.py <file> <vars...>), "
-                   "recompile the file into the library, then sim_run again",
+        out["busy_block"] = {
+            "instance": top[0][0], "file": f, "repo_relative": rel, **blk,
+            "also_busy": [{"instance": p, "file": split_fl(proc_line.get(p, ""))[0], "line": split_fl(proc_line.get(p, ""))[1]}
+                          for p, c in top[1:4] if c > 20 * cycles],
+            "explanation": "these processes keep re-triggering each other inside one simulation time step (the value "
+                           "one writes wakes the other, which writes back). Look at how the listed variables are assigned "
+                           "in this block and the blocks that read them; rtl_override + rtl_recompile to change the RTL.",
         }
-    elif kind == "deadlock_or_idle":
-        out["suggestion"] = {"fix": "few process executions in the window: a handshake never completes. Open a sim_session "
-                                    "at the stall time and probe the valid/ready pairs along the path (CCU FSM state_q, "
-                                    "LLC mst/slv req/resp, the core's icache/dcache AXI)"}
+    elif kind == "idle":
+        out["next"] = ("nothing is executing, so a handshake or interrupt never arrives. Open a sim_session, advance to "
+                       "stall_ns and probe the request/response signals along the path the last activity was on "
+                       "(sim_uart and sim_status markers show how far the program got).")
     return out
 
 

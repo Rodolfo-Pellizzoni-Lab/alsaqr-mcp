@@ -57,7 +57,7 @@ def sw_build(test: str, extra_cflags: str | None = None, clean: bool = False) ->
     if not elf.exists():
         return _err("no ELF produced", f"expected {elf}")
     cfg.binaries.mkdir(parents=True, exist_ok=True)
-    dst = cfg.binaries / f"{name}_l3.riscv"
+    dst = cfg.binaries / f"{name}.riscv"
     shutil.copyfile(elf, dst)
     try:
         info = elf_info(cfg, dst)
@@ -101,8 +101,26 @@ def _address_map(cfg: Config) -> list[dict]:
                      "source": f"host/{f.name} (idx {m.group(1)})"}
             if not any(x["base"] == b and x["end"] == e and x["source"] == entry["source"] for x in entries):
                 entries.append(entry)
+    # windows the RTL tables leave unnamed
+    for name, base, end, src in (("SCMI mailbox", 0x10404000, 0x10405000, "host/axi_lite_subsystem.sv (idx 4)"),):
+        if not any(e["base"] == base and e["name"] == name for e in entries):
+            entries.append({"name": name, "base": base, "end": end, "length": end - base, "source": src})
     _CACHE["amap"] = entries
     return entries
+
+
+def _apmu_windows(cfg: Config) -> list[dict]:
+    """APMU sub-windows (instruction/data scratchpads, counters) from the software's pmu_defines.h."""
+    if "apmu" in _CACHE:
+        return _CACHE["apmu"]
+    out = []
+    hdr = cfg.software / "quad_boot" / "pmu_defines.h"
+    if hdr.exists():
+        for m in re.finditer(r"#define\s+(\w*(?:BASE_ADDR|_ADDR))\s+(0x[0-9A-Fa-f]+)", hdr.read_text(errors="replace")):
+            name = m.group(1).replace("_BASE_ADDR", "").replace("_ADDR", "")
+            out.append({"name": f"APMU {name}", "base": int(m.group(2), 16), "end": None, "source": "software/quad_boot/pmu_defines.h"})
+    _CACHE["apmu"] = out
+    return out
 
 
 def _hier_index(cfg: Config) -> dict:
@@ -205,6 +223,19 @@ def soc_lookup(query: str) -> dict:
              "source": e["source"]} for e in hits[:8]],
             "note": "smallest enclosing window first; rule tables from axi_lite_subsystem/periph wrappers are named by their comment"}
     out = {"query": q}
+    # a subsystem / window name: UART, PLIC, mailbox, ISPM, ...
+    ql = q.lower()
+    windows = [e for e in _address_map(cfg) if ql in e["name"].lower().replace("_", "")
+               or ql in e["name"].lower()] + [e for e in _apmu_windows(cfg) if ql in e["name"].lower()]
+    if windows:
+        seen, uniq = set(), []
+        for e in windows:
+            key = (e["name"], e["base"])
+            if key not in seen:
+                seen.add(key)
+                uniq.append({"name": e["name"], "base": f"0x{e['base']:08x}",
+                             "end": f"0x{e['end']:08x}" if e.get("end") else None, "source": e["source"]})
+        out["windows"] = uniq[:12]
     index = _hier_index(cfg)
     if q in index:
         out["module"] = {"instances": [{"parent": p, "instance": i, "file": f, "line": ln, "generate": lab}
@@ -214,7 +245,7 @@ def soc_lookup(query: str) -> dict:
     tdefs = typeinfo.build_index(cfg).get(q)
     if tdefs:
         out["typedef"] = {"layouts": tdefs[:4]}
-    if "module" not in out and "typedef" not in out:
+    if "module" not in out and "typedef" not in out and "windows" not in out:
         # signal / identifier: where is it declared or assigned?
         hits = []
         try:
@@ -233,32 +264,38 @@ def soc_lookup(query: str) -> dict:
 # ---------------------------------------------------------------- soc_bootflow
 def soc_bootflow() -> dict:
     return {
-        "flow": "L3 (the only flow the tools support)",
-        "memory": {"L2": "0x1C00_0000 + 32 KB SRAM: .tohost and .spm_data only", "L3": "0x8000_0000 + 512 MB simulation DRAM behind the LLC: code, data, stack",
-                   "boot ROM": "0x1_0000", "SCMI mailbox": "0x1040_4000 (word 0 = boot address for woken cores, +0x24 completion irq)",
-                   "PLIC": "0x0C00_0000 (context 2*hart+1 = M-mode of hart)", "UART (mock)": "0x1A10_0000"},
-        "sequence": [
-            {"t_ns": 0, "who": "tb", "what": "reset, FLL dummy clocks; cores held until ~1.5 ms"},
-            {"t_ns": 1000000, "who": "tb JTAG", "what": "[JTAG] Initialization success (DTM idcode, dmactive)"},
-            {"t_ns": 1550000, "who": "cores", "what": "all four cores leave reset and run the boot ROM; harts 1-3 wait in wfi for their boot interrupt"},
-            {"t_ns": 2000000, "who": "tb JTAG", "what": "haltreq hart 0 -> [JTAG] Halted hart 0"},
-            {"t_ns": 2110000, "who": "tb", "what": "[XSIM-L2]/[XSIM-L3] sections: ELF written straight into L2 banks and the sim DRAM"},
-            {"t_ns": 2490000, "who": "tb JTAG", "what": "dpc = entry, resumereq -> [JTAG] Resumed hart 0 from 0x80000000"},
-            {"t_ns": 2530000, "who": "core 0 startup (syscalls.c)", "what": "UART setup, PLIC priorities, mailbox word 0 = 0x80000000, completion irq -> core 1 wakes and jumps to the entry"},
-            {"t_ns": 2560000, "who": "core 0", "what": "first Mock uart line (hello tests)"},
-            {"t_ns": 2620000, "who": "test code", "what": "e.g. quad_boot: APMU counters armed -> overflow irqs (PLIC IDs 156/157) wake cores 2 and 3"},
-            {"t_ns": 2840000, "who": "tb JTAG", "what": "tohost polled over SBA; exit code -> [JTAG] SUCCESS / FAILED, $finish"},
+        "what_is_simulated": "the AlSaqr SoC RTL (4 CVA6 cores, coherency unit, last-level cache, on-chip SRAM, "
+                             "debug module, interrupt controllers, peripherals) in Vivado xsim. DRAM is not a chip model: "
+                             "it is a plain byte array attached behind the last-level cache, zero unless written. "
+                             "The console is a mock UART that prints each line the software writes.",
+        "memory": {"DRAM (array)": "0x8000_0000, 512 MB: program code, data and stack",
+                   "on-chip SRAM": "0x1C00_0000, 32 KB: the tohost word (exit code) and small shared variables",
+                   "boot ROM": "0x1_0000: every core starts here after reset",
+                   "SCMI mailbox": "0x1040_4000: word 0 = address a woken core jumps to; +0x24 raises the wake-up interrupt",
+                   "PLIC": "0x0C00_0000 (context 2*hart+1 = machine mode of that hart)",
+                   "UART": "0x4000_0000 (the mock UART the console lines come from)"},
+        "how_a_program_runs": [
+            {"t_ns": 0, "who": "testbench", "what": "reset and clocks; cores are held in reset for ~1.5 ms"},
+            {"t_ns": 1000000, "who": "testbench JTAG", "what": "debug module initialised -> marker '[JTAG] Initialization success'"},
+            {"t_ns": 1550000, "who": "cores", "what": "all four cores start in the boot ROM; cores 1-3 sleep (wfi) until a wake-up interrupt"},
+            {"t_ns": 2000000, "who": "testbench JTAG", "what": "core 0 halted -> '[JTAG] Halted hart 0'"},
+            {"t_ns": 2110000, "who": "testbench", "what": "the ELF is written into the DRAM array and the SRAM -> '[XSIM-L3] section ...' / '[XSIM-L2] section ...'"},
+            {"t_ns": 2490000, "who": "testbench JTAG", "what": "core 0 resumed at the entry -> '[JTAG] Resumed hart 0 from 0x80000000'"},
+            {"t_ns": 2530000, "who": "core 0 startup code", "what": "UART setup; writes the mailbox so core 1 wakes and jumps to the entry"},
+            {"t_ns": 2560000, "who": "core 0", "what": "first console line (for a hello test)"},
+            {"t_ns": 2620000, "who": "test code", "what": "tests that use cores 2 and 3 arm APMU counters whose overflow interrupts wake them"},
+            {"t_ns": 2840000, "who": "testbench JTAG", "what": "reads the tohost word; exit code 0 -> '[JTAG] SUCCESS', else '[JTAG] FAILED'; then $finish"},
         ],
-        "wakeups": {"core 1": "SCMI mailbox completion interrupt (PLIC source 10), raised by core 0's startup code",
-                    "cores 2, 3": "APMU counter overflow interrupts (PLIC sources 156, 157), raised by the test's counter setup",
-                    "any core": "JTAG haltreq/resume also works while a core is in wfi"},
-        "failure_signatures": {
-            "no UART, [JTAG] Halted hart 0 never printed": "hart 0 not halting: DM/DMI path (dm_mem ring) or JTAG timing",
-            "state stalled, memory growing": "combinational ring -> sim_stall_trace",
-            "state stalled, memory flat": "deadlock: a handshake never completes -> sim_session probe of valid/ready pairs",
-            "core prints once then nothing, SUCCESS missing": "test never writes tohost, or wrong tohost address (tb polls 0x1C00_0000 for L3 builds)",
-            "secondary core silent": "it jumped to the mailbox word (0x80000000) before the program was there, or its PLIC context is not enabled"},
-        "markers": ["[JTAG] Initialization success", "[JTAG] Halted hart 0", "[XSIM-L3] section at 0x80000000",
-                    "[JTAG] Resumed hart 0", "Mock uart ...", "[JTAG] SUCCESS", "$finish"],
-        "rates": {"sim_run": "~40 s wall per simulated ms", "sim_session/trace (debug snapshot)": "~80 s wall per simulated ms"},
+        "wakeups": {"core 1": "SCMI mailbox interrupt, raised by core 0's startup code",
+                    "cores 2, 3": "APMU counter-overflow interrupts (PLIC sources 156, 157), raised by test code",
+                    "any core": "the testbench can also halt/resume a core over JTAG"},
+        "if_something_goes_wrong": {
+            "no '[JTAG] Halted hart 0'": "core 0 never entered debug mode: debug module or JTAG path",
+            "sim_status says stalled": "simulated time stopped advancing; sim_stall_trace shows what was executing",
+            "console lines then no SUCCESS": "the program never wrote tohost, or wrote a non-zero exit code (FAILED)",
+            "a secondary core never prints": "its wake-up interrupt never fired, or it jumped before the program was loaded"},
+        "markers_in_order": ["[JTAG] Initialization success", "[JTAG] Halted hart 0", "[XSIM-L3] section at 0x80000000",
+                             "[JTAG] Resumed hart 0", "Mock uart ...", "[JTAG] SUCCESS", "$finish"],
+        "speed": {"sim_run": "about 40 s of wall clock per simulated millisecond",
+                  "sim_session / sim_stall_trace": "about 80 s per simulated millisecond (debug-visible build)"},
     }

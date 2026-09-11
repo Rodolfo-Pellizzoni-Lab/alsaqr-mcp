@@ -509,7 +509,7 @@ def sim_session(op: str, session_id: str | None = None, binary: str | None = Non
     op = (op or "").lower()
     if op == "open":
         if not binary:
-            return _err("missing binary", "op='open' needs binary=<L3 ELF>")
+            return _err("missing binary", "op='open' needs binary=<program ELF>")
         return op_open(cfg, binary, session_id)
     if op == "list":
         return op_list(cfg)

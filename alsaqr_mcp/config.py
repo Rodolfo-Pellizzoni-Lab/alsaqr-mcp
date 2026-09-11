@@ -21,10 +21,10 @@ class Config:
         self.xelab_generics = dict(data["xelab_generics"])
         self.plusargs = dict(data["plusargs"])
         mm = data["memory_map"]
-        self.l2_base = int(mm["l2"]["base"], 16)
-        self.l2_size = int(mm["l2"]["size"], 16)
-        self.l3_base = int(mm["l3"]["base"], 16)
-        self.l3_size = int(mm["l3"]["size"], 16)
+        self.sram_base = int(mm["sram"]["base"], 16)   # on-chip SRAM (holds .tohost and small shared data)
+        self.sram_size = int(mm["sram"]["size"], 16)
+        self.dram_base = int(mm["dram"]["base"], 16)   # simulated DRAM: a byte array behind the LLC
+        self.dram_size = int(mm["dram"]["size"], 16)
         self.entry = int(mm["entry"], 16)
         self.stall_idle_s = int(data.get("stall_idle_s", 180))
         self.default_timeout_s = int(data.get("default_timeout_s", 7200))

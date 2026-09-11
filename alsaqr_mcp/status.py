@@ -131,9 +131,9 @@ def sim_status(run_id: str, since_ns: int | None = None) -> dict:
     if uart_lines:
         out["uart_hint"] = f"sim_uart(run_id='{run_id}') for the {uart_lines} console lines"
     if state == "stalled" or wd.get("stalled_at_ns") is not None:
-        out["stall"] = {"at_ns": wd.get("stalled_at_ns"), "rss_growing": wd.get("rss_growing", False),
-                        "kind_guess": "comb_ring (event queue growing)" if wd.get("rss_growing") else "deadlock or very slow (memory flat)",
-                        "next": f"sim_stall_trace(run_id='{run_id}')"}
+        out["stall"] = {"at_ns": wd.get("stalled_at_ns"), "memory_growing": wd.get("rss_growing", False),
+                        "meaning": "simulated time stopped advancing; the run was killed by the watchdog",
+                        "next": f"sim_stall_trace(run_id='{run_id}') to see what the simulator was executing"}
     if state in ("finished", "timeout", "killed", "elab_failed"):
         rc = st.get("rc")
         verdict = "success" if any(m["kind"] == "success" for m in markers) else (

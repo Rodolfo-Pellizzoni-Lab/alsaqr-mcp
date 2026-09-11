@@ -1,4 +1,4 @@
-"""Category B: rtl_override, rtl_recompile, rtl_fix_ring — edit RTL as scratch overrides and recompile them."""
+"""rtl_override, rtl_recompile: edit RTL/testbench files as scratch overrides and recompile them into the simulator library."""
 import difflib
 import os
 import re
@@ -6,7 +6,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from . import combfix
 from .config import Config, load
 
 MAX_DIFF_LINES = 120
@@ -200,33 +199,3 @@ def rtl_recompile(files: list[str], extra_defines: list[str] | None = None) -> d
     return out
 
 
-# ---------------------------------------------------------------- rtl_fix_ring
-def rtl_fix_ring(file: str, vars: list[str], dry_run: bool = False) -> dict:
-    cfg = load()
-    if not vars:
-        return _err("no vars", "pass vars: the variables the always_comb block writes (from sim_stall_trace.suggestion)")
-    rel = _rel(cfg, file)
-    if rel is None:
-        return _err("unknown file", f"{file} is neither under {cfg.hardware} nor {cfg.overrides}")
-    ov = cfg.overrides / rel
-    created = False
-    if not ov.exists():
-        ov.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(cfg.hardware / rel, ov)
-        _map_add(cfg, rel)
-        created = True
-    original = ov.read_text(errors="replace")
-    try:
-        new, report = combfix.rewrite(original, list(vars))
-    except combfix.FixError as e:
-        return _err("rewrite failed", str(e), file=rel)
-    problems = combfix.audit(original, new, list(vars))
-    d = list(difflib.unified_diff(original.splitlines(), new.splitlines(), f"before/{rel}", f"after/{rel}", lineterm="", n=1))
-    out = {"file": rel, "override_path": str(ov), "override_created": created, "dry_run": bool(dry_run),
-           **report, "audit": problems, "diff": d[:MAX_DIFF_LINES], "diff_truncated": len(d) > MAX_DIFF_LINES}
-    if problems:
-        out["warning"] = "audit found problems: review the diff before recompiling"
-    if not dry_run:
-        ov.write_text(new)
-        out["next"] = f"rtl_recompile(files=['{rel}']) then sim_run again"
-    return out
