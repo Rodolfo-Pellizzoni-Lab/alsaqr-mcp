@@ -144,7 +144,7 @@ def sim_status(run_id: str, since_ns: int | None = None) -> dict:
     if state == "elab_failed":
         ef = d / "elab_errors.txt"
         out["elab_errors"] = ef.read_text().splitlines()[:5] if ef.exists() else []
-        out["fix"] = "fix the compile error in the override, then rtl_recompile the file and sim_run again"
+        out["fix"] = "fix the compile error in the file, then rtl_recompile it and sim_run again"
     if state == "elaborating":
         out["note"] = "elaboration in progress (~4 min); the simulation starts afterwards"
     return out
@@ -226,7 +226,20 @@ def _kill_run(cfg: Config, run_id: str) -> dict:
         snap = st.get("snapshot")
         if snap and not (cfg.work / f"{snap}.ok").exists():
             subprocess.run(["rm", "-rf", str(cfg.work / "xsim.dir" / snap)], check=False)
-    return {"run_id": run_id, "result": "killed", "processes": killed}
+    else:
+        # a running simulation: the runner notices xsim exiting and records phase=killed (plus rc and the final
+        # UART sweep). Wait for that so sim_status right after this call already says killed.
+        deadline = time.time() + 15
+        while time.time() < deadline and load_state(d).get("phase") in ("queued", "elab", "running"):
+            time.sleep(0.3)
+        st = load_state(d)
+        if st.get("phase") in ("queued", "elab", "running"):  # runner gone or stuck: record it ourselves
+            if st.get("runner_pid"):
+                _kill_pgid(int(st["runner_pid"]))
+            st["phase"] = "killed"
+            st["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            (d / "run.json").write_text(json.dumps(st, indent=1))
+    return {"run_id": run_id, "result": "killed", "state": load_state(d).get("phase"), "processes": killed}
 
 
 def sim_kill(run_id: str | None = None, session_id: str | None = None, all: bool = False) -> dict:

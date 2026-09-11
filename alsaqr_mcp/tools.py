@@ -1,7 +1,7 @@
 """Tool registry: name, description, JSON schema, implementation.
 
 Simulation: sim_run, sim_status, sim_uart, sim_kill, sim_session, sim_stall_trace
-RTL edits:  rtl_override, rtl_recompile
+RTL edits:  rtl_changes, rtl_recompile
 Software and navigation: sw_build, soc_lookup, soc_bootflow
 """
 from . import rtl, session, sim, soc, stall, status
@@ -84,7 +84,7 @@ TOOLS = {
             "signals": {**_LS, "description": "probe: up to 32 signal paths"},
             "scope": {**_S, "description": "scope_list: instance path (default: the SoC top)"},
             "path": {**_S, "description": "force/release: signal path"},
-            "value": {**_S, "description": "force: value, e.g. 0, 1, 8'hff"},
+            "value": {**_S, "description": "force: hex like probe output (1, 0, deadbeef, 0x3f) or a Verilog literal (4'b1010, 'd12)"},
             "wait_s": {**_I, "description": "advance/wait: max seconds to block (default 600)"}},
             "required": ["op"]},
         "fn": lambda a: session.sim_session(a["op"], a.get("session_id"), a.get("binary"), a.get("to_ns"), a.get("by_ns"),
@@ -109,25 +109,25 @@ TOOLS = {
                                               a.get("binary"), a.get("snapshot")),
     },
     # ------------------------------------------------------------------ RTL edits
-    "rtl_override": {
+    "rtl_changes": {
         "description": (
-            "Edit RTL or testbench files without touching the repository: the simulator compiles from an 'override' copy "
-            "of a file when one exists. ops: create(path) makes the override copy (then edit that file); diff(path) shows "
-            "override vs repository; show(path); revert(path) resets the copy to the repository content; remove(path) "
-            "deletes the copy; list(filter?) lists all overrides. Paths are relative to hardware/ (e.g. "
-            "'ip_list/riscv-dbg/src/dm_mem.sv') or absolute. After editing, run rtl_recompile."
+            "RTL and testbench sources are the files of the he-soc checkout (branch xsim-port) under hardware/: edit them "
+            "directly, then rtl_recompile. This tool shows what differs from the git HEAD: list(filter?) -> changed HDL "
+            "files with in_library (false = edited after it was compiled); diff(path) -> the change as a unified diff; "
+            "revert(path) -> restore the HEAD version (then rtl_recompile it). Paths are relative to hardware/ (e.g. "
+            "'ip_list/riscv-dbg/src/dm_mem.sv') or absolute."
         ),
         "schema": {"type": "object", "properties": {
-            "op": {**_S, "enum": ["create", "diff", "show", "revert", "remove", "list"]},
+            "op": {**_S, "enum": ["list", "diff", "revert"]},
             "path": _S, "filter": {**_S, "description": "list: substring filter"}},
             "required": ["op"]},
-        "fn": lambda a: rtl.rtl_override(a["op"], a.get("path"), a.get("filter")),
+        "fn": lambda a: rtl.rtl_changes(a["op"], a.get("path"), a.get("filter")),
     },
     "rtl_recompile": {
         "description": (
-            "Compile edited RTL/testbench files into the simulator's library (the override copy when one exists, otherwise "
-            "the repository file) with the same include paths and defines the original build used. Returns compiler errors "
-            "as {file, line, msg}. The next sim_run / sim_session / sim_stall_trace rebuilds the design (~4-5 min)."
+            "Compile edited RTL/testbench files into the simulator's library with the same include paths and defines the "
+            "full build used. Returns compiler errors as {file, line, msg}. The next sim_run / sim_session / "
+            "sim_stall_trace rebuilds the design (~4-5 min). sim_run warns when an edited file was not recompiled."
         ),
         "schema": {"type": "object", "properties": {
             "files": {**_LS, "description": "repo-relative (below hardware/) or absolute paths"},
@@ -154,8 +154,9 @@ TOOLS = {
         "description": (
             "Find your way around the SoC: an address (0x...) -> which memory window / peripheral it belongs to, with the "
             "offset; a subsystem name (UART, PLIC, mailbox, APMU, ISPM, DSPM, LLC, ...) -> its address windows; a module "
-            "name -> where it is instantiated and its instance paths (usable in sim_session); a struct type name -> its "
-            "fields; any other identifier -> where it appears in the RTL."
+            "name -> where it is instantiated and its instance paths (usable in sim_session); a struct type name (also "
+            "pkg::name) -> its fields; any other identifier (signal, parameter, `define macro) -> where it appears in the "
+            "compiled RTL and testbench, definitions first."
         ),
         "schema": {"type": "object", "properties": {"query": _S}, "required": ["query"]},
         "fn": lambda a: soc.soc_lookup(a["query"]),

@@ -27,15 +27,19 @@ python3 -m alsaqr_mcp sim_session op=probe session_id=s1 'signals=["i_host_domai
 ```
 
 Claude Code: `claude mcp add alsaqr -- python3 -m alsaqr_mcp serve` (run from this directory, or set `PYTHONPATH`).
-Paths to the simulator build tree, the toolchain and the repository are in `config.json`.
+
+Setup: the tools drive the in-tree xsim flow of the he-soc repository's `xsim-port` branch. Check that branch out
+and build the simulator library once with `hardware/xsim/build.sh` (~2 min); every tool reports
+`{error, fix}` if either is missing. Paths (he-soc checkout, RISC-V toolchain, Vivado) are in `config.json`.
 
 Conventions: times are simulated nanoseconds (`*_ns`); outputs are compact JSON and raw logs stay on disk (their
 paths are returned); errors are `{error, fix}`. Runs, sessions and traces are background processes with their
-state under `~/.cache/he-soc-simexp/{runs,sessions,traces}/<id>/`. The repository is never modified: RTL and
-testbench changes are made on override copies.
+state under `hardware/xsim/work/mcp/{runs,sessions,traces}/<id>/` (git-ignored, next to the compiled library).
+RTL and testbench sources are the he-soc files themselves: edit them in place, `rtl_recompile` them, and use
+`rtl_changes` (git) to see or undo what was changed.
 
 A typical loop: `soc_bootflow` once → `sw_build` → `sim_run` → `sim_status` / `sim_uart` → if stalled,
-`sim_stall_trace` → `sim_session` to probe signals → `rtl_override` + `rtl_recompile` → `sim_run` again.
+`sim_stall_trace` → `sim_session` to probe signals → edit the RTL + `rtl_recompile` → `sim_run` again.
 
 ## Simulation tools
 
@@ -44,13 +48,15 @@ Start a simulation of a program in the background.
 ```
 in:  { binary: path, timeout_s?: int (7200), tag?: str }
 out: { run_id, snapshot, elab: "reused"|"rebuilding", elab_note, entry, tohost, binary_size, checks: [str],
-       timeout_s, uart: {tool: "sim_uart", args: {run_id}, file, note}, logs: {stdout, watchdog, state}, next: [str] }
+       timeout_s, uart: {tool: "sim_uart", args: {run_id}, file, note}, logs: {stdout, watchdog, state}, next: [str],
+       stale_sources?: [path], warning? }
 err: binary not found | elf unreadable | program linked for the wrong memory | no tohost symbol |
-     sections outside DRAM/SRAM | no compiled library
+     sections outside DRAM/SRAM | xsim flow not found | no compiled library
 ```
 The program must be built for DRAM (entry 0x8000_0000, `sw_build` or `make build`). States: queued → elab →
 running → finished | stalled | timeout | killed. "stalled" means simulated time stopped advancing for 180 s of
-wall clock and the run was killed.
+wall clock and the run was killed. `stale_sources` lists files edited after they were compiled: the run uses
+the old version until they are recompiled.
 
 ### sim_status
 ```
@@ -74,8 +80,9 @@ without a lock interleave their characters.
 ### sim_kill
 ```
 in:  { run_id?: str, session_id?: str, all?: bool }
-out: { killed: [{run_id|session_id, result, processes?}] }
+out: { killed: [{run_id|session_id, result, state?, processes?}] }
 ```
+Returns once the run's state reads `killed`, so a `sim_status` right after it is already final.
 
 ### sim_session
 An interactive simulation that keeps its state between calls, for reading and forcing signals.
@@ -92,9 +99,10 @@ op=list       {}                                     -> { sessions: [...] }
 ```
 Signal paths are instance paths below the SoC top, e.g. `i_host_domain/i_axi_llc/slv_req_i` (`soc_lookup`
 returns the path of a module; `scope_list` shows what an instance contains); `tb/...` addresses the testbench.
-Values are hex. Struct-typed signals come back with named `fields` (arrays of structs as `elements`, in index
-order). Opening a session builds a debug-visible copy of the design once (~5 min); it runs about half as fast as
-`sim_run`. `advance` returns `running` if it takes longer than `wait_s`; `wait` collects it.
+Values are hex, both ways: `probe` returns hex and `force` takes hex (`deadbeef`, `0x3f`) or a Verilog literal
+(`4'b1010`, `8'hff`, `'d12`). Struct-typed signals come back with named `fields` (arrays of structs as `elements`,
+in index order). Opening a session builds a debug-visible copy of the design once (~5 min); it runs about half as
+fast as `sim_run`. `advance` returns `running` if it takes longer than `wait_s`; `wait` collects it.
 
 ### sim_stall_trace
 What the simulator was doing when a run stalled.
@@ -113,25 +121,25 @@ the request/response signals along the path the program was on.
 
 ## RTL editing tools
 
-### rtl_override
-The simulator compiles from an override copy of a file when one exists, so the repository stays untouched.
+### rtl_changes
+What differs from the git HEAD of the he-soc checkout (the sources are edited in place).
 ```
-op=create { path }  -> { path, override_path, created, note }     make the copy (then edit that file)
-op=diff   { path }  -> { path, added, removed, lines, truncated }  copy vs repository
-op=show   { path }  -> { path, source: override|repo, file, lines }
-op=revert { path }  -> { result }                                  reset the copy to the repository content
-op=remove { path }  -> { result }                                  delete the copy
-op=list   { filter? } -> { count, overrides: [{path, override_exists, differs}], map }
+op=list   { filter? } -> { count, changes: [{path, status: modified|new|deleted|same as HEAD, in_library}], note }
+op=diff   { path }    -> { path, added, removed, lines, truncated }  unified diff against HEAD
+op=revert { path }    -> { path, result, note }                      restore the HEAD version (then rtl_recompile it)
 ```
-Paths are relative to `hardware/` (e.g. `ip_list/riscv-dbg/src/dm_mem.sv`) or absolute.
+`in_library: false` means the file was edited after it was compiled; `same as HEAD` marks a file back at its
+HEAD content (e.g. after revert) whose edited version is still in the library. Untracked files are listed only
+when the build compiles them. Paths are relative to `hardware/` (e.g. `ip_list/riscv-dbg/src/dm_mem.sv`) or absolute.
 
 ### rtl_recompile
 ```
 in:  { files: [path], extra_defines?: [str] }
-out: { compiled: [{file, source: override|repo, ok, log}], errors: [{file, line, msg}], note?, fix? }
+out: { compiled: [{file, ok, log}], errors: [{file, line, msg}], note?, fix? }
 ```
-Compiles the files into the simulator library with the include paths and defines the original build used. The
-next `sim_run` / `sim_session` / `sim_stall_trace` rebuilds the design.
+Compiles the files into the simulator library with the include paths and defines the full build used, and
+records the compile (that is what `in_library` and `stale_sources` compare against). The next `sim_run` /
+`sim_session` / `sim_stall_trace` rebuilds the design.
 
 ## Software and navigation tools
 
@@ -150,11 +158,15 @@ in:  { query }
 out: address   -> { address, matches: [{name, base, end, offset, source}], nearest? }
      subsystem -> { windows: [{name, base, end, source}] }          e.g. UART, PLIC, mailbox, APMU, ISPM, DSPM
      module    -> { module: { instances: [{parent, instance, file, line, generate}], paths: [instance paths] } }
-     struct    -> { typedef: { layouts: [[field, ...]] } }
-     other     -> { identifier: { hits: [{file, line, text}] } }
+     struct    -> { typedef: { layouts: [[field, ...]], note? } }                  name or pkg::name
+     other     -> { identifier: { hits: [{file, line, text, kind: declaration|conditional|use}], total, files, note },
+                    compile_define? }
 ```
 Address windows come from the SoC packages and the address-rule tables; instance paths follow the same
-convention as `sim_session` (`tb/dut/i_host_domain/...`, generate loops as `label[i]`).
+convention as `sim_session` (`tb/dut/i_host_domain/...`, generate loops as `label[i]`). Identifiers (signals,
+parameters, `` `define `` macros) are whole-word matches over the compiled RTL, testbench and include headers,
+declarations first; `compile_define` says when a macro is set on the compiler command line instead. The module
+and typedef indexes are cached under the state directory and rebuilt when a compiled source changes.
 
 ### soc_bootflow
 No input. What is simulated, the memory map, how a program is loaded and how each core starts, the markers

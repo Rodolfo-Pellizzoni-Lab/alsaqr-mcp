@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from . import sources
 from .config import Config, load
 from .elf import ElfError, check_layout, elf_info
 
@@ -21,33 +22,22 @@ def _err(error: str, fix: str, **extra) -> dict:
 
 
 def snapshot_stamp(cfg: Config) -> str:
-    """Identity of the elaborated design: every override file (path, size, mtime), the tb defines,
-    the xelab generics and the DPI library. Any change means a new snapshot."""
+    """Identity of the elaborated design: the compiled library, the testbench top (recompiled by every
+    elaboration), the tb defines, the xelab generics and the DPI library. Any change means a new snapshot."""
     h = hashlib.sha1()
-    for p in sorted(cfg.overrides.rglob("*")):
-        if p.is_file() and not p.name.endswith((".bak", ".wonly", ".orig")):
-            st = p.stat()
-            h.update(f"{p.relative_to(cfg.overrides)}|{st.st_size}|{st.st_mtime_ns}\n".encode())
+    if cfg.tb_file.exists():
+        st = cfg.tb_file.stat()
+        h.update(f"tb|{st.st_size}|{st.st_mtime_ns}\n".encode())
     h.update(("defines:" + ",".join(cfg.tb_defines) + "\n").encode())
     h.update(("generics:" + json.dumps(cfg.xelab_generics, sort_keys=True) + "\n").encode())
     dpi = cfg.dpi_dir / "libdpi.so"
     if dpi.exists():
         h.update(f"dpi|{dpi.stat().st_size}|{dpi.stat().st_mtime_ns}\n".encode())
-    # the compiled library itself (a recompiled RTL file changes the library's timestamp)
-    lib = cfg.work / "xsim.dir" / "work"
-    if lib.exists():  # a recompiled unit rewrites its .sdb in place: fingerprint newest mtime + count
-        newest, count = 0, 0
-        tb_units = set()
-        tu = cfg.work / "tb_units.txt"
-        if tu.exists():
-            tb_units = set(tu.read_text().split())
-        with os.scandir(lib) as it:
-            for e in it:
-                # units recompiled by every elaboration (the testbench and what it includes) must not feed the stamp
-                if e.is_file() and "ariane_tb" not in e.name and e.name not in tb_units:
-                    count += 1
-                    newest = max(newest, e.stat().st_mtime_ns)
-        h.update(f"lib|{count}|{newest}\n".encode())
+    # the compiled library: the last full build plus every rtl_recompile since. (The library's own .sdb timestamps
+    # are not usable: every tb compile, by run.sh or an elaboration, rewrites the units the tb includes.)
+    h.update(f"lib|{sources.baseline_ns(cfg)}\n".encode())
+    for path, t in sorted(sources.compile_records(cfg).items()):
+        h.update(f"{path}|{t}\n".encode())
     return h.hexdigest()[:10]
 
 
@@ -68,11 +58,7 @@ def _tb_xvlog_opts(cfg: Config) -> str:
             line = l
             break
     opts = re.findall(r"(-i|-d) ([^ ]+)", line)
-    keep = []
-    for k, v in opts:
-        if k == "-d" and (v.startswith("XSIM_FORCE_RESET") or v in ("DUAL_BOOT",)):
-            continue
-        keep.append(f"{k} {v}")
+    keep = [f"{k} {v}" for k, v in opts if not (k == "-d" and v == "DUAL_BOOT")]
     keep += [f"-d {d}" for d in cfg.tb_defines]
     return " ".join(keep)
 
@@ -106,8 +92,9 @@ def sim_run(binary: str, timeout_s: int | None = None, tag: str | None = None) -
         p = problems[0]
         return _err(p["error"], p["fix"], checks=checks,
                     problems=problems, entry=f"0x{info['entry']:08x}")
-    if not (cfg.work / "compile.sh").exists():
-        return _err("no compiled library", f"{cfg.work} has no compile.sh; run the xsim compile flow first")
+    fp = cfg.flow_problem()
+    if fp:
+        return fp
 
     stamp = snapshot_stamp(cfg)
     snap = snapshot_name(stamp)
@@ -150,7 +137,7 @@ def sim_run(binary: str, timeout_s: int | None = None, tag: str | None = None) -
         (run_dir / "run.json").write_text(json.dumps(cur, indent=1))
     except Exception:
         (run_dir / "run.json").write_text(json.dumps(state, indent=1))
-    return {
+    out = {
         "run_id": run_id, "snapshot": snap, "elab": state["elab"],
         "elab_note": "first run on this design: elaboration takes ~4 min before simulation starts"
         if need_elab else "snapshot reused: simulation starts immediately",
@@ -163,3 +150,15 @@ def sim_run(binary: str, timeout_s: int | None = None, tag: str | None = None) -
         "next": [f"sim_status(run_id='{run_id}') to follow progress (phase, sim time, markers, stalls)",
                  f"sim_uart(run_id='{run_id}') to read console output"],
     }
+    out.update(stale_warning(cfg))
+    return out
+
+
+def stale_warning(cfg: Config) -> dict:
+    """{stale_sources, warning} when edited files have not been recompiled into the library, else {}."""
+    stale = sources.stale_files(cfg)
+    if not stale:
+        return {}
+    return {"stale_sources": stale[:10],
+            "warning": f"{len(stale)} source file(s) changed after they were compiled: this simulation uses the old "
+                       f"version. rtl_recompile(files={stale[:10]}) and start again to include the edits"}

@@ -10,6 +10,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+from . import sources
 from .config import Config, load
 from .session import debug_snapshot_name, debug_snapshot_ready, _generics, _plusargs, _tb_opts
 from .status import run_dir, load_state, _watchdog, _scan_stdout
@@ -24,7 +25,7 @@ def _err(error, fix, **extra):
 
 
 def traces_root(cfg: Config) -> Path:
-    return cfg.simexp / "traces"
+    return cfg.traces
 
 
 def _start(cfg: Config, run_id: str | None, at_ns: int | None, window_ns: int, binary: str | None,
@@ -45,6 +46,9 @@ def _start(cfg: Config, run_id: str | None, at_ns: int | None, window_ns: int, b
             return _err("no stall time", "the run has no TICK heartbeat yet; pass at_ns explicitly")
     if not binary or at_ns is None:
         return _err("missing arguments", "pass run_id (of a stalled run) or binary + at_ns")
+    fp = cfg.flow_problem()
+    if fp:
+        return fp
     snap = snapshot or debug_snapshot_name(cfg)
     if snapshot and not debug_snapshot_ready(cfg, snapshot):
         return _err("unknown snapshot", f"no elaborated debug snapshot {snapshot} in {cfg.work}/xsim.dir")
@@ -111,11 +115,7 @@ def _block_writes(path: Path, line: int) -> dict:
     return {"block_line": start + 1, "block_end": j + 1, "variables_written": vars_}
 
 
-def _override_or_repo(cfg: Config, src: str) -> Path:
-    p = Path(src)
-    if p.exists():
-        return p
-    return p
+_SRC_LINE_RE = re.compile(r"^INFO: (/\S+\.(?:sv|svh|v|vh|vhd|vhdl|vp)):\d+\s*$")
 
 
 def _analyse(cfg: Config, td: Path, st: dict) -> dict:
@@ -130,7 +130,7 @@ def _analyse(cfg: Config, td: Path, st: dict) -> dict:
             if not raw.startswith(b"INFO: /"):
                 continue
             l = raw.decode("utf-8", "replace").rstrip()
-            if l.startswith("INFO: /home/") or l.startswith("INFO: /tmp/") or l.startswith("INFO: /tools/"):
+            if _SRC_LINE_RE.match(l):  # a source location (any directory), not an instance path
                 if pending is not None:
                     proc_line.setdefault(pending, l[6:])
                     pending = None
@@ -154,14 +154,14 @@ def _analyse(cfg: Config, td: Path, st: dict) -> dict:
     if kind == "busy_loop":
         f, ln = split_fl(proc_line.get(top[0][0], ""))
         blk = _block_writes(Path(f), ln) if f and ln else {}
-        rel = f.split("/overrides/", 1)[-1] if "/overrides/" in f else f.split("/hardware/", 1)[-1]
+        rel = sources.rel(cfg, f)
         out["busy_block"] = {
             "instance": top[0][0], "file": f, "repo_relative": rel, **blk,
             "also_busy": [{"instance": p, "file": split_fl(proc_line.get(p, ""))[0], "line": split_fl(proc_line.get(p, ""))[1]}
                           for p, c in top[1:4] if c > 20 * cycles],
             "explanation": "these processes keep re-triggering each other inside one simulation time step (the value "
                            "one writes wakes the other, which writes back). Look at how the listed variables are assigned "
-                           "in this block and the blocks that read them; rtl_override + rtl_recompile to change the RTL.",
+                           "in this block and the blocks that read them; edit the file, then rtl_recompile it.",
         }
     elif kind == "idle":
         out["next"] = ("nothing is executing, so a handshake or interrupt never arrives. Open a sim_session, advance to "

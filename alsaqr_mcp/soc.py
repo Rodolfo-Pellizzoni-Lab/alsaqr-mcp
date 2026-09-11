@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from . import typeinfo
+from . import sources, typeinfo
 from .config import Config, load
 from .elf import ElfError, check_layout, elf_info
 
@@ -30,6 +30,7 @@ def sw_build(test: str, extra_cflags: str | None = None, clean: bool = False) ->
         known = sorted(p.name for p in cfg.software.iterdir() if (p / "Makefile").exists()) if cfg.software.exists() else []
         return _err("unknown test", f"no Makefile in {d}; tests under {cfg.software}: {', '.join(known[:40])}")
     name = d.name
+    cfg.binaries.mkdir(parents=True, exist_ok=True)
     gcc = (f"riscv64-unknown-elf-gcc -include {cfg.uint_compat} -Wno-error=int-conversion "
            f"-Wno-error=implicit-function-declaration {extra_cflags or ''}").strip()
     env = dict(os.environ)
@@ -101,9 +102,13 @@ def _address_map(cfg: Config) -> list[dict]:
                      "source": f"host/{f.name} (idx {m.group(1)})"}
             if not any(x["base"] == b and x["end"] == e and x["source"] == entry["source"] for x in entries):
                 entries.append(entry)
-    # windows the RTL tables leave unnamed
+    # windows the RTL tables leave unnamed: name the table entry instead of adding a second one
     for name, base, end, src in (("SCMI mailbox", 0x10404000, 0x10405000, "host/axi_lite_subsystem.sv (idx 4)"),):
-        if not any(e["base"] == base and e["name"] == name for e in entries):
+        same = [e for e in entries if e["base"] == base and e["end"] == end]
+        for e in same:
+            if e["name"].startswith("rule idx"):
+                e["name"] = name
+        if not same:
             entries.append({"name": name, "base": base, "end": end, "length": end - base, "source": src})
     _CACHE["amap"] = entries
     return entries
@@ -124,18 +129,20 @@ def _apmu_windows(cfg: Config) -> list[dict]:
 
 
 def _hier_index(cfg: Config) -> dict:
-    """module -> [(parent_module, instance_name, file, line, generate_label)] over every .sv the flow compiles."""
-    if "hier" in _CACHE:
+    """module -> [(parent_module, instance_name, file, line, generate_label)] over every .sv the flow compiles.
+    Cached on disk and rebuilt when a compiled source file changes."""
+    fp = sources.fingerprint(cfg)
+    if _CACHE.get("hier_fp") == fp:
         return _CACHE["hier"]
-    cache_file = cfg.simexp / "hier_cache.json"
-    if cache_file.exists():
-        _CACHE["hier"] = json.loads(cache_file.read_text())
-        return _CACHE["hier"]
-    files = set()
-    for l in (cfg.work / "compile.sh").read_text().splitlines():
-        for tok in l.split():
-            if tok.endswith((".sv", ".v")) and os.path.exists(tok):
-                files.add(tok)
+    cache_file = cfg.state / "hier_cache.json"
+    try:
+        cached = json.loads(cache_file.read_text())
+        if cached.get("fingerprint") == fp:
+            _CACHE["hier"], _CACHE["hier_fp"] = cached["index"], fp
+            return cached["index"]
+    except (OSError, ValueError, AttributeError, KeyError):
+        pass
+    files = {str(f) for f in sources.compiled_files(cfg) if f.suffix in (".sv", ".v") and f.exists()}
     inst_re = re.compile(r"^[ \t]*([A-Za-z_]\w*)[ \t]*(?:#[ \t]*\((?:[^()]|\([^()]*\)|\((?:[^()]|\([^()]*\))*\))*\))?\s+([A-Za-z_]\w*)[ \t]*\(", re.M)
     kw = {"module", "input", "output", "inout", "logic", "wire", "reg", "assign", "always_comb", "always_ff", "if",
           "for", "else", "case", "typedef", "localparam", "parameter", "function", "task", "initial", "return", "generate",
@@ -182,9 +189,10 @@ def _hier_index(cfg: Config) -> dict:
     # the testbench instantiates the SoC behind an `ifndef, which the regex cannot see: fix the root by hand
     if not any(p == "ariane_tb" for p, *_ in index.get("al_saqr", [])):
         index.setdefault("al_saqr", []).append(["ariane_tb", "dut", "tb/ariane_tb.sv", None, None])
-    _CACHE["hier"] = index
+    _CACHE["hier"], _CACHE["hier_fp"] = index, fp
     try:
-        cache_file.write_text(json.dumps(index))
+        cfg.state.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps({"fingerprint": fp, "index": index}))
     except OSError:
         pass
     return index
@@ -242,22 +250,48 @@ def soc_lookup(query: str) -> dict:
                                        for p, i, f, ln, lab in index[q][:12]],
                          "paths": _paths_to(cfg, q),
                          "note": "paths are static (module nesting); generate indices appear as [i]; confirm with sim_session scope_list"}
-    tdefs = typeinfo.build_index(cfg).get(q)
+    tname = q.split("::")[-1]  # pkg::type -> type (a name may have one layout per package)
+    tdefs = typeinfo.build_index(cfg).get(tname)
     if tdefs:
         out["typedef"] = {"layouts": tdefs[:4]}
+        if tname != q or len(tdefs) > 1:
+            out["typedef"]["note"] = f"layouts of every typedef named {tname}, whichever package declares it"
     if "module" not in out and "typedef" not in out and "windows" not in out:
-        # signal / identifier: where is it declared or assigned?
-        hits = []
-        try:
-            r = subprocess.run(["grep", "-rn", "-m", "3", "-E", rf"\b{re.escape(q)}\b\s*(,|;|\)|=|\[)", "--include=*.sv",
-                                str(cfg.hardware / "host"), str(cfg.hardware / "include"), str(cfg.hardware / "ip_list" / "cva6" / "core")],
-                               capture_output=True, text=True, timeout=60)
-            for l in r.stdout.splitlines()[:15]:
-                f, ln, txt = l.split(":", 2)
-                hits.append({"file": f.replace(str(cfg.hardware) + "/", ""), "line": int(ln), "text": txt.strip()[:120]})
-        except Exception:
-            pass
-        out["identifier"] = {"hits": hits, "note": "no module or typedef of that name; grep hits in host/, include/ and cva6/core"}
+        out["identifier"] = _find_identifier(cfg, q)
+    return out
+
+
+# a line that defines or declares the identifier rather than just using it
+_DEFINING_RE = re.compile(r"^\s*(`define|`undef|localparam|parameter|typedef|module|interface|package|"
+                          r"input|output|inout|logic|wire|reg|bit|int|integer|genvar|struct|enum|function|task|class)\b")
+_CONDITIONAL_RE = re.compile(r"^\s*`(ifn?def|elsif)\b")
+
+
+def _find_identifier(cfg: Config, q: str) -> dict:
+    """Where a signal / parameter / macro / other name appears in the compiled RTL and testbench (whole words)."""
+    files = [str(f) for f in sources.design_files(cfg)]
+    hits = []
+    try:
+        r = subprocess.run(["grep", "-n", "-w", "-F", "-m", "5", "--", q, *files],
+                           capture_output=True, text=True, timeout=60)
+        for l in r.stdout.splitlines():
+            f, ln, txt = l.split(":", 2)
+            kind = ("declaration" if _DEFINING_RE.match(txt) else
+                    "conditional" if _CONDITIONAL_RE.match(txt) else "use")
+            hits.append({"file": sources.rel(cfg, f), "line": int(ln), "text": txt.strip()[:120], "kind": kind})
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    order = {"declaration": 0, "conditional": 1, "use": 2}
+    hits.sort(key=lambda h: order[h["kind"]])  # declarations, then `ifdef tests, then uses (file order kept)
+    out = {"hits": hits[:15], "total": len(hits), "files": len({h["file"] for h in hits}),
+           "note": ("no module, typedef or address window of that name; whole-word matches in the compiled RTL, "
+                    "testbench and include headers (at most 5 per file)" if hits else
+                    "no module, typedef, address window or source line with that name in the compiled design")}
+    # macros set on the compiler command line have no `define anywhere
+    cs = cfg.work / "compile.sh"
+    if cs.exists() and re.search(rf"-d {re.escape(q)}(=\S*)?(\s|$)", cs.read_text()):
+        out["compile_define"] = (f"{q} is defined on the xvlog command line (work/compile.sh, from "
+                                 f"hardware/xsim/env.sh or a bender target)")
     return out
 
 

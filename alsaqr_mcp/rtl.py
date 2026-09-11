@@ -1,14 +1,15 @@
-"""rtl_override, rtl_recompile: edit RTL/testbench files as scratch overrides and recompile them into the simulator library."""
-import difflib
+"""rtl_changes, rtl_recompile: see what was edited in the RTL/testbench (vs the git HEAD of the he-soc checkout)
+and compile edited files into the simulator library."""
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
+from . import sources
 from .config import Config, load
 
 MAX_DIFF_LINES = 120
+_SRC_RE = re.compile(r"\.(sv|svh|v|vh|vhd|vhdl)$")
 
 
 def _err(error, fix, **extra):
@@ -18,114 +19,118 @@ def _err(error, fix, **extra):
 
 
 # ---------------------------------------------------------------- paths
-def _rel(cfg: Config, path: str) -> str | None:
-    """Repo-relative path (below hardware/) for a repo path, an override path or a relative path."""
+def _resolve(cfg: Config, path: str) -> Path | None:
+    """Absolute path of a file given as absolute, 'hardware/...' or relative to hardware/."""
     p = Path(os.path.expanduser(path))
-    for root in (cfg.hardware, cfg.overrides):
-        try:
-            if p.is_absolute():
-                return str(p.resolve().relative_to(root.resolve()))
-        except ValueError:
-            continue
-    s = str(p)
-    if s.startswith("hardware/"):
-        s = s[len("hardware/"):]
-    return s if (cfg.hardware / s).exists() or (cfg.overrides / s).exists() else None
+    if not p.is_absolute():
+        s = str(p)
+        p = cfg.hardware / (s[len("hardware/"):] if s.startswith("hardware/") else s)
+    p = p.resolve()
+    try:
+        p.relative_to(cfg.hardware.resolve())
+    except ValueError:
+        return None
+    return p
 
 
-def _map_entries(cfg: Config) -> list[tuple[str, str]]:
-    if not cfg.override_map.exists():
-        return []
+def _git(cfg: Config, *args, check=False) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(cfg.repo), *args], capture_output=True, text=True, timeout=120, check=check)
+
+
+# ---------------------------------------------------------------- rtl_changes
+def _changed(cfg: Config) -> list[tuple[str, Path]]:
+    """(status, absolute path) of every HDL file under hardware/ that differs from HEAD. Untracked files count only
+    when the build compiles them (the tree also holds untracked tool output, e.g. Vivado IP sources under fpga/)."""
+    r = _git(cfg, "status", "--porcelain=v1", "-uall", "--", "hardware")
+    compiled = {str(f) for f in sources.compiled_files(cfg)}
     out = []
-    for l in cfg.override_map.read_text().splitlines():
-        parts = l.split()
-        if len(parts) == 2:
-            out.append((parts[0], parts[1]))
+    for l in r.stdout.splitlines():
+        code, name = l[:2], l[3:].strip().strip('"')
+        if " -> " in name:  # rename: keep the new name
+            name = name.split(" -> ", 1)[1]
+        if not _SRC_RE.search(name):
+            continue
+        p = cfg.repo / name
+        if code == "??" and str(p) not in compiled:
+            continue
+        status = "new" if code == "??" or "A" in code else ("deleted" if "D" in code else "modified")
+        out.append((status, p))
     return out
 
 
-def _map_add(cfg: Config, rel: str):
-    repo, ov = str(cfg.hardware / rel), str(cfg.overrides / rel)
-    if any(r == repo for r, _ in _map_entries(cfg)):
-        return
-    with open(cfg.override_map, "a") as f:
-        f.write(f"{repo} {ov}\n")
-
-
-def _map_remove(cfg: Config, rel: str):
-    repo = str(cfg.hardware / rel)
-    keep = [f"{r} {o}" for r, o in _map_entries(cfg) if r != repo]
-    cfg.override_map.write_text("\n".join(keep) + ("\n" if keep else ""))
-
-
-def _diff(a: Path, b: Path, label_a: str, label_b: str) -> dict:
-    ta = a.read_text(errors="replace").splitlines() if a.exists() else []
-    tb = b.read_text(errors="replace").splitlines() if b.exists() else []
-    d = list(difflib.unified_diff(ta, tb, label_a, label_b, lineterm="", n=2))
+def _diff(cfg: Config, p: Path, untracked: bool) -> dict:
+    if untracked:
+        r = _git(cfg, "diff", "--no-index", "-U2", "--", "/dev/null", str(p))
+    else:
+        r = _git(cfg, "diff", "-U2", "HEAD", "--", str(p))
+    d = [l for l in r.stdout.splitlines() if not l.startswith(("diff --git", "index ", "new file mode"))]
     added = sum(1 for l in d if l.startswith("+") and not l.startswith("+++"))
     removed = sum(1 for l in d if l.startswith("-") and not l.startswith("---"))
     return {"added": added, "removed": removed, "lines": d[:MAX_DIFF_LINES], "truncated": len(d) > MAX_DIFF_LINES}
 
 
-# ---------------------------------------------------------------- rtl_override
-def rtl_override(op: str, path: str | None = None, filter: str | None = None) -> dict:
+def rtl_changes(op: str, path: str | None = None, filter: str | None = None) -> dict:
     cfg = load()
     op = (op or "").lower()
+    if not (cfg.repo / ".git").exists():
+        return _err("not a git checkout", f"{cfg.repo} has no .git")
     if op == "list":
+        recs, base = sources.compile_records(cfg), sources.baseline_ns(cfg)
+        compiled = {str(f) for f in sources.compiled_files(cfg)}
+        tb = str(cfg.tb_file.resolve())
         entries = []
-        for repo, ov in _map_entries(cfg):
-            rel = repo.replace(str(cfg.hardware) + "/", "")
-            if filter and filter not in rel:
+        for status, p in _changed(cfg):
+            r = sources.rel(cfg, p)
+            if filter and filter not in r:
                 continue
-            entries.append({"path": rel, "override_exists": Path(ov).exists(),
-                            "differs": Path(ov).exists() and Path(repo).exists() and
-                            Path(ov).read_bytes() != Path(repo).read_bytes()})
-        return {"count": len(entries), "overrides": entries[:200], "map": str(cfg.override_map)}
+            e = {"path": r, "status": status}
+            if str(p) == tb:
+                e["in_library"] = "recompiled at every elaboration"
+            elif str(p) in compiled:
+                e["in_library"] = not sources.is_stale(cfg, p, recs, base)
+            else:
+                e["in_library"] = "not part of the build"
+            entries.append(e)
+        # back to the HEAD content (e.g. after revert) but the library still holds the edited version
+        listed = {e["path"] for e in entries}
+        for r in sources.stale_files(cfg):
+            if r not in listed and (not filter or filter in r):
+                entries.append({"path": r, "status": "same as HEAD", "in_library": False})
+        out = {"count": len(entries), "changes": entries[:200],
+               "note": "differences from the git HEAD of the he-soc checkout; in_library=false: rtl_recompile it"}
+        return out
     if not path:
-        return _err("missing path", "pass path (repo-relative below hardware/, or absolute)")
-    rel = _rel(cfg, path)
-    if rel is None:
-        return _err("unknown file", f"{path} is neither under {cfg.hardware} nor {cfg.overrides}")
-    repo, ov = cfg.hardware / rel, cfg.overrides / rel
-    if op == "create":
-        if not repo.exists():
-            return _err("no such repo file", str(repo))
-        existed = ov.exists()
-        if not existed:
-            ov.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(repo, ov)
-        _map_add(cfg, rel)
-        return {"path": rel, "override_path": str(ov), "created": not existed,
-                "note": "edit the override, then rtl_recompile(files=[path]); the next sim_run re-elaborates"}
+        return _err("missing path", "pass path (relative to hardware/, or absolute)")
+    p = _resolve(cfg, path)
+    if p is None:
+        return _err("not a hardware file", f"{path} is not under {cfg.hardware}")
+    rel = sources.rel(cfg, p)
+    tracked = _git(cfg, "ls-files", "--error-unmatch", "--", str(p)).returncode == 0
     if op == "diff":
-        if not ov.exists():
-            return _err("no override", f"{rel} has no override; rtl_override(op='create') first")
-        return {"path": rel, **_diff(repo, ov, f"repo/{rel}", f"override/{rel}")}
-    if op == "show":
-        target = ov if ov.exists() else repo
-        return {"path": rel, "source": "override" if ov.exists() else "repo", "file": str(target),
-                "lines": target.read_text(errors="replace").count("\n")}
+        if not p.exists() and not tracked:
+            return _err("no such file", str(p))
+        return {"path": rel, **_diff(cfg, p, untracked=not tracked)}
     if op == "revert":
-        if not ov.exists():
-            return _err("no override", f"{rel} has no override")
-        shutil.copyfile(repo, ov)
-        return {"path": rel, "result": "override reset to the repo content",
-                "note": "rtl_recompile(files=[path]) to put the original back into the library"}
-    if op == "remove":
-        if ov.exists():
-            ov.unlink()
-        _map_remove(cfg, rel)
-        return {"path": rel, "result": "override removed", "note": "rtl_recompile the repo file to update the library"}
-    return _err("unknown op", "ops: create, diff, show, revert, remove, list")
+        if not tracked:
+            if not p.exists():
+                return _err("no such file", str(p))
+            return _err("not tracked by git", f"{rel} is a new file; delete it instead of reverting")
+        r = _git(cfg, "checkout", "HEAD", "--", str(p))
+        if r.returncode != 0:
+            return _err("revert failed", r.stderr.strip()[:300])
+        note = ("rtl_recompile(files=[path]) to put the original back into the library"
+                if p in sources.compiled_files(cfg) and p != cfg.tb_file.resolve() else None)
+        return {"path": rel, "result": "restored to the git HEAD version", "note": note}
+    return _err("unknown op", "ops: list, diff, revert")
 
 
 # ---------------------------------------------------------------- rtl_recompile
 _ERR_RE = re.compile(r"^ERROR: \[[^\]]+\] (.*?) \[([^:\]]+):(\d+)\]\s*$")
 
 
-def _compile_line_for(cfg: Config, basename: str) -> str | None:
+def _compile_line_for(cfg: Config, src: Path) -> str | None:
     for l in (cfg.work / "compile.sh").read_text().splitlines():
-        if re.match(r"^(xvlog|xvhdl) .*[ /]" + re.escape(basename) + r"( |$)", l):
+        if re.match(r"^(xvlog|xvhdl) .*[ ]" + re.escape(str(src)) + r"( |$)", l):
             return l
     return None
 
@@ -148,54 +153,48 @@ def rtl_recompile(files: list[str], extra_defines: list[str] | None = None) -> d
     cfg = load()
     if not files:
         return _err("no files", "pass files: [path, ...]")
+    fp = cfg.flow_problem()
+    if fp:
+        return fp
     results, errors = [], []
     env = dict(os.environ)
+    logdir = cfg.state / "recompile"
+    logdir.mkdir(parents=True, exist_ok=True)
     for f in files:
-        rel = _rel(cfg, f)
-        if rel is None:
-            errors.append({"file": f, "line": None, "msg": "not a repo/override file"})
+        src = _resolve(cfg, f)
+        if src is None or not src.exists():
+            errors.append({"file": f, "line": None, "msg": f"no such file under {cfg.hardware}"})
             continue
-        src = cfg.overrides / rel if (cfg.overrides / rel).exists() else cfg.hardware / rel
-        line = _compile_line_for(cfg, Path(rel).name)
+        rel = sources.rel(cfg, src)
+        line = _compile_line_for(cfg, src)
         if line is None:
-            errors.append({"file": rel, "line": None, "msg": "no compile block for this file in compile.sh"})
+            errors.append({"file": rel, "line": None, "msg": "not part of the build (no compile block in compile.sh)"})
             continue
         tool, opts = _options(line)
-        # drop obsolete "-d XSIM_FORCE_RESET" pairs from the generated options
-        cleaned, skip = [], False
-        for k, o in enumerate(opts):
-            if skip:
-                skip = False
-                continue
-            if o == "-d" and k + 1 < len(opts) and opts[k + 1] == "XSIM_FORCE_RESET":
-                skip = True
-                continue
-            cleaned.append(o)
-        opts = cleaned
-        for d in cfg.recompile_defines.get(rel, []) + list(extra_defines or []):
+        for d in extra_defines or []:
             opts += ["-d", d]
+        started = sources.now_ns()
         r = subprocess.run(["bash", "-c", f'source "{cfg.vivado_settings}" >/dev/null 2>&1 && exec "$@"', "_", tool, *opts, str(src)],
                            cwd=str(cfg.work), capture_output=True, text=True, env=env, timeout=900)
-        log = cfg.work / f"recompile_{Path(rel).name}.log"
+        log = logdir / f"{src.name}.log"
         log.write_text(r.stdout + r.stderr)
         file_errors = []
         for l in (r.stdout + r.stderr).splitlines():
             m = _ERR_RE.match(l)
             if m:
-                file_errors.append({"file": m.group(2).replace(str(cfg.overrides) + "/", ""), "line": int(m.group(3)), "msg": m.group(1)[:200]})
+                file_errors.append({"file": sources.rel(cfg, m.group(2)), "line": int(m.group(3)), "msg": m.group(1)[:200]})
             elif l.startswith("ERROR"):
                 file_errors.append({"file": rel, "line": None, "msg": l[:200]})
         if r.returncode != 0 or file_errors:
             errors += file_errors or [{"file": rel, "line": None, "msg": f"{tool} exited {r.returncode}"}]
-            results.append({"file": rel, "source": "override" if src == cfg.overrides / rel else "repo", "ok": False, "log": str(log)})
+            results.append({"file": rel, "ok": False, "log": str(log)})
         else:
-            results.append({"file": rel, "source": "override" if src == cfg.overrides / rel else "repo", "ok": True, "log": str(log)})
+            sources.record_compile(cfg, src, started)
+            results.append({"file": rel, "ok": True, "log": str(log)})
     ok = [r for r in results if r["ok"]]
     out = {"compiled": ok, "errors": errors[:20]}
     if ok:
         out["note"] = "the library changed: the next sim_run / sim_session / sim_stall_trace elaborates a new snapshot"
     if errors:
-        out["fix"] = "fix the reported lines in the override and recompile"
+        out["fix"] = "fix the reported lines and recompile"
     return out
-
-

@@ -5,11 +5,12 @@ axi/typedef.svh (whose bodies are `typedef struct packed {...} req_t;` with macr
 """
 import json
 import re
-from pathlib import Path
 
+from . import sources
 from .config import Config
 
 _CACHE = None
+_CACHE_FP = None
 _TYPEDEF_RE = re.compile(r"typedef\s+struct\s+packed\s*\{(.*?)\}\s*([A-Za-z_]\w*)\s*;", re.S)
 _MEMBER_RE = re.compile(r"^\s*(?:[A-Za-z_][\w:]*(?:\s*\[[^\]]*\])*\s+)+([A-Za-z_]\w*)\s*(?:\[[^\]]*\])*\s*;", re.M)
 
@@ -52,42 +53,39 @@ def _members(body: str) -> list[str]:
 
 
 def build_index(cfg: Config) -> dict:
-    """{type_name: [member names]} from every .sv/.svh under the hardware tree (plus overrides)."""
-    global _CACHE
-    cache_file = cfg.simexp / "typeinfo_cache.json"
-    if _CACHE is None and cache_file.exists():
-        _CACHE = json.loads(cache_file.read_text())
+    """{type_name: [member names]} from the compiled sources and the headers they can include. Cached on disk and
+    rebuilt when a compiled source file changes."""
+    global _CACHE, _CACHE_FP
+    fp = sources.fingerprint(cfg)
+    if _CACHE is not None and _CACHE_FP == fp:
         return _CACHE
-    if _CACHE is not None:
-        return _CACHE
-    hw = Path(cfg.simexp / ".." / "he-soc" / "hardware").resolve()
-    if not hw.exists():
-        hw = Path.home() / "he-soc" / "hardware"
-    index: dict[str, list[str]] = {}
-    roots = [cfg.overrides, hw]
-    seen = set()
-    for root in roots:
-        for p in root.rglob("*"):
-            if p.suffix not in (".sv", ".svh") or not p.is_file():
-                continue
-            rel = str(p.relative_to(root))
-            if rel in seen:
-                continue
-            seen.add(rel)
-            try:
-                txt = p.read_text(errors="replace")
-            except OSError:
-                continue
-            if "typedef" not in txt:
-                continue
-            txt = txt.replace("\\\n", "\n")  # macro line continuations
-            for m in _TYPEDEF_RE.finditer(txt):
-                name, members = m.group(2), _members(m.group(1))
-                if members and members not in index.setdefault(name, []):
-                    index[name].append(members)  # a name may carry several distinct layouts (packages, macros)
-    _CACHE = index
+    cache_file = cfg.state / "typeinfo_cache.json"
     try:
-        cache_file.write_text(json.dumps(index))
+        cached = json.loads(cache_file.read_text())
+        if cached.get("fingerprint") == fp:
+            _CACHE, _CACHE_FP = cached["index"], fp
+            return _CACHE
+    except (OSError, ValueError, AttributeError, KeyError):
+        pass
+    index: dict[str, list[str]] = {}
+    for p in sources.design_files(cfg):
+        if p.suffix not in (".sv", ".svh"):
+            continue
+        try:
+            txt = p.read_text(errors="replace")
+        except OSError:
+            continue
+        if "typedef" not in txt:
+            continue
+        txt = txt.replace("\\\n", "\n")  # macro line continuations
+        for m in _TYPEDEF_RE.finditer(txt):
+            name, members = m.group(2), _members(m.group(1))
+            if members and members not in index.setdefault(name, []):
+                index[name].append(members)  # a name may carry several distinct layouts (packages, macros)
+    _CACHE, _CACHE_FP = index, fp
+    try:
+        cfg.state.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps({"fingerprint": fp, "index": index}))
     except OSError:
         pass
     return index

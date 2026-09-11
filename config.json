@@ -1,28 +1,19 @@
 {
-  "simexp": "~/.cache/he-soc-simexp",
-  "work": "~/.cache/he-soc-simexp/xsim/w_I",
-  "overrides": "~/.cache/he-soc-simexp/xsim/overrides",
-  "override_map": "~/.cache/he-soc-simexp/xsim/overrides_pad.map",
-  "tb_file": "~/.cache/he-soc-simexp/xsim/overrides/tb/ariane_tb.sv",
-  "dpi_dir": "~/.cache/he-soc-simexp/xsim/dpi",
-  "runs": "~/.cache/he-soc-simexp/runs",
-  "readelf": "~/.cache/he-soc-simexp/gcc2/riscv/bin/riscv64-unknown-elf-readelf",
-  "riscv_gcc_bin": "~/.cache/he-soc-simexp/gcc2/riscv/bin",
-  "uint_compat": "~/.cache/he-soc-simexp/run/uint_compat.h",
-  "binaries": "~/.cache/he-soc-simexp/run",
   "hardware": "~/he-soc/hardware",
   "software": "~/he-soc/software",
+  "work": "~/he-soc/hardware/xsim/work",
+  "state": "~/he-soc/hardware/xsim/work/mcp",
+  "tb_file": "~/he-soc/hardware/tb/ariane_tb.sv",
+  "dpi_dir": "~/he-soc/hardware/xsim/work",
+  "uint_compat": "~/he-soc/hardware/xsim/sw/uint_compat.h",
+  "riscv_gcc_bin": "~/.cache/he-soc-simexp/gcc2/riscv/bin",
+  "readelf": "~/.cache/he-soc-simexp/gcc2/riscv/bin/riscv64-unknown-elf-readelf",
   "vivado_settings": "/tools/Xilinx/Vivado/2024.2/settings64.sh",
   "tb_defines": [
     "XSIM_NO_AXI_DRV",
     "XSIM_L2_PRELOAD",
     "XSIM_L3_FLOW"
   ],
-  "recompile_defines": {
-    "host/host_domain.sv": [
-      "XSIM_SIM_DRAM"
-    ]
-  },
   "xelab_generics": {
     "USE_S25FS256S_MODEL": 0,
     "USE_24FC1025_MODEL": 0,

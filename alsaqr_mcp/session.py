@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .config import Config, load
 from .elf import ElfError, check_layout, elf_info
-from .sim import snapshot_stamp
+from .sim import snapshot_stamp, stale_warning
 from . import typeinfo
 
 MAX_SIGNALS = 32
@@ -28,7 +28,7 @@ def _err(error, fix, **extra):
 
 
 def sessions_root(cfg: Config) -> Path:
-    return cfg.simexp / "sessions"
+    return cfg.sessions
 
 
 def debug_snapshot_name(cfg: Config) -> str:
@@ -156,6 +156,9 @@ def op_open(cfg: Config, binary: str, session_id: str | None) -> dict:
     checks, problems = check_layout(cfg, info)
     if problems:
         return _err(problems[0]["error"], problems[0]["fix"], checks=checks)
+    fp = cfg.flow_problem()
+    if fp:
+        return fp
     snap = debug_snapshot_name(cfg)
     need_elab = not debug_snapshot_ready(cfg, snap)
     sid = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id) if session_id else "s_" + hashlib.sha1(
@@ -182,7 +185,7 @@ def op_open(cfg: Config, binary: str, session_id: str | None) -> dict:
                                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
     st["runner_pid"] = proc.pid
     _save(d, st)
-    return {
+    out = {
         "session_id": sid, "snapshot": snap, "elab": st["elab"], "state": st["phase"],
         "note": ("debug elaboration in progress (~5 min); the session becomes ready afterwards"
                  if need_elab else "starting xsim (~30 s)"),
@@ -191,6 +194,8 @@ def op_open(cfg: Config, binary: str, session_id: str | None) -> dict:
         "next": [f"sim_session(op='advance', session_id='{sid}', to_ns=...) then op='probe'",
                  f"sim_session(op='scope_list', session_id='{sid}', scope='i_host_domain') to discover names"],
     }
+    out.update(stale_warning(cfg))
+    return out
 
 
 def _ready(cfg: Config, d: Path, st: dict, wait_s: float) -> dict | None:
@@ -416,6 +421,24 @@ def op_scope_list(cfg: Config, sid: str, scope: str, wait_s=60) -> dict:
             "truncated": len(scopes) > MAX_SCOPE_ITEMS or len(objs) > MAX_SCOPE_ITEMS}
 
 
+_VLOG_LIT_RE = re.compile(r"^(\d*)'([sS]?)([bBoOdDhH])([0-9a-fA-FxXzZ_]+)$")
+_RADIX = {"b": "bin", "o": "oct", "d": "dec", "h": "hex"}
+
+
+def force_value(value: str) -> tuple[str, str] | None:
+    """(xsim radix, digits) for a force value: hex by default (the format probe returns), 0x-prefixed hex,
+    or a sized/unsized Verilog literal such as 4'b1010, 8'hff, 'd12. None if it is none of these."""
+    v = str(value).strip().replace("_", "")
+    m = _VLOG_LIT_RE.match(v)
+    if m:
+        return _RADIX[m.group(3).lower()], m.group(4)
+    if v.lower().startswith("0x"):
+        v = v[2:]
+    if v and re.fullmatch(r"[0-9a-fA-FxXzZ]+", v):
+        return "hex", v
+    return None
+
+
 def op_force(cfg: Config, sid: str, path: str, value: str | None, release: bool = False, wait_s=30) -> dict:
     d = _sdir(cfg, sid)
     if d is None:
@@ -431,7 +454,10 @@ def op_force(cfg: Config, sid: str, path: str, value: str | None, release: bool 
         fid = forces.get(path)
         cmd = f"remove_force {fid}" if fid else "remove_forces -all"
     else:
-        cmd = f"add_force {p} {value}"
+        fv = force_value(value)
+        if fv is None:
+            return _err("bad value", f"{value!r}: pass hex (deadbeef, 0x3f) or a Verilog literal (4'b1010, 8'hff, 'd12)")
+        cmd = f"add_force -radix {fv[0]} {p} {fv[1]}"
     status, lines = _send(d, st, f"if {{[catch {{set fid [{cmd}]}} e]}} {{puts \"@@E $e\"}} else {{puts \"@@OK $fid\"}}", float(wait_s))
     errs = [l[4:] for l in lines if l.startswith("@@E ")]
     if errs:
