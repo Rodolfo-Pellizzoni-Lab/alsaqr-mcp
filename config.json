@@ -46,5 +46,6 @@
     "entry": "0x80000000"
   },
   "stall_idle_s": 180,
-  "default_timeout_s": 7200
+  "default_timeout_s": 7200,
+  "toolchain_bundle": "~/alsaqr-software"
 }

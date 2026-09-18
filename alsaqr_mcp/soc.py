@@ -44,11 +44,13 @@ def sw_build(test: str, extra_cflags: str | None = None, clean: bool = False, ta
     cfg.binaries.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     bundle = _bundle_of(d)
+    if bundle is None and cfg.software.resolve() not in d.parents and cfg.toolchain_bundle and _bundle_of(cfg.toolchain_bundle):
+        bundle = cfg.toolchain_bundle   # e.g. apmu-software: no toolchains of its own, built like alsaqr-software
     if bundle:
         # alsaqr-software: its own rv64 gcc, the rv32 gcc + riscv-none-elf-* shim for the APMU firmware
         tc = bundle / "toolchain"
         env["PATH"] = ":".join(str(p) for p in (tc / "shim", tc / "rv32" / "bin", tc / "rv64" / "bin")) + ":" + env.get("PATH", "")
-        env["SW_HOME"] = str(bundle / "tests")
+        env["SW_HOME"] = str(bundle / "tests") if d.is_relative_to(bundle) else str(d.parent)
         env["ALSAQR_ROOT"] = str(bundle)
         gcc = f"riscv64-unknown-elf-gcc {extra_cflags or ''}".strip()
     else:
@@ -91,7 +93,7 @@ def sw_build(test: str, extra_cflags: str | None = None, clean: bool = False, ta
     from .elf import region_of
     sections = [{"name": s["name"], "addr": f"0x{s['addr']:08x}", "size": s["size"],
                  "region": region_of(cfg, s["addr"], s["size"])} for s in info["sections"]]
-    out = {"test": name, "target": target, "toolchain": "alsaqr-software bundle" if bundle else str(cfg.riscv_gcc_bin),
+    out = {"test": name, "target": target, "toolchain": f"{bundle}/toolchain" if bundle else str(cfg.riscv_gcc_bin),
            "elf": str(dst), "entry": f"0x{info['entry']:08x}",
            "tohost": f"0x{info['symbols']['tohost']:08x}" if "tohost" in info["symbols"] else None,
            "size": info["size"], "sections": sections, "checks": checks, "problems": problems,

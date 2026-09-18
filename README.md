@@ -155,7 +155,9 @@ RISC-V toolchain and checks the ELF layout. A directory inside an alsaqr-softwar
 bundle's own toolchains (its rv64 gcc plus the rv32 `riscv-none-elf-*` shim the APMU firmware Makefiles expect),
 so `target=pmu_bench` of `tests/pmu_mempol_synth` builds the Ibex firmware and embeds it. The ELF is
 `<target>.riscv` (or `<test>.riscv`) and is copied to the tool's `bin/` directory as `<test>_<target>.riscv`.
-`extra_cflags` is appended to every compiler call, e.g. `-DXSIM` for simulation-only code paths.
+`extra_cflags` is appended to every compiler call, e.g. `-DXSIM` for simulation-only code paths. A test directory
+outside he-soc `software/` that has no bundled toolchains (e.g. an apmu-software checkout) is built with the
+alsaqr-software checkout named by `toolchain_bundle` in `config.json`.
 
 Running alsaqr-software's `pmu_mempol_synth` in the simulator: use `tests/pmu_mempol_synth_sim`
 (`sw_build test=~/alsaqr-software/tests/pmu_mempol_synth_sim target=pmu_bench`). On the FPGA all four cores

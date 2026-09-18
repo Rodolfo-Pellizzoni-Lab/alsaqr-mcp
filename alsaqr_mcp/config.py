@@ -37,6 +37,9 @@ class Config:
         self.stall_idle_s = int(data.get("stall_idle_s", 180))
         self.default_timeout_s = int(data.get("default_timeout_s", 7200))
         self.runner = ROOT / "scripts" / "sim_runner.sh"
+        # alsaqr-software checkout whose toolchains build tests that live outside he-soc software/ (optional)
+        tb = data.get("toolchain_bundle")
+        self.toolchain_bundle = Path(os.path.expanduser(tb)) if tb else None
 
     def flow_problem(self) -> dict | None:
         """{error, fix} when the xsim flow is not usable (wrong branch, library not built), else None."""
