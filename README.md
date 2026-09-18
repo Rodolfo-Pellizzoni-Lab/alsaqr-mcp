@@ -145,12 +145,24 @@ records the compile (that is what `in_library` and `stale_sources` compare again
 
 ### sw_build
 ```
-in:  { test: name|dir, extra_cflags?: str, clean?: bool }
-out: { test, elf, entry, tohost, size, sections: [{name, addr, size, region: dram|sram}], checks, problems, next }
-err: unknown test (lists the available ones) | build failed {errors: [{file, line, msg}], log}
+in:  { test: name|dir, target?: str (build), extra_cflags?: str, clean?: bool }
+out: { test, target, toolchain, elf, entry, tohost, size, sections: [{name, addr, size, region: dram|sram}], checks,
+       problems, next }
+err: unknown test (lists the available ones) | build failed {errors: [{file, line, msg}], log} | no ELF produced
 ```
-Runs `make build` for a test under `software/` with the RISC-V toolchain and checks the ELF layout. Tests that
-also program the APMU core have their own build steps that this tool does not cover yet.
+Runs `make <target>` for a test (a name under he-soc `software/`, or any directory with a Makefile) with the
+RISC-V toolchain and checks the ELF layout. A directory inside an alsaqr-software checkout is built with that
+bundle's own toolchains (its rv64 gcc plus the rv32 `riscv-none-elf-*` shim the APMU firmware Makefiles expect),
+so `target=pmu_bench` of `tests/pmu_mempol_synth` builds the Ibex firmware and embeds it. The ELF is
+`<target>.riscv` (or `<test>.riscv`) and is copied to the tool's `bin/` directory as `<test>_<target>.riscv`.
+`extra_cflags` is appended to every compiler call, e.g. `-DXSIM` for simulation-only code paths.
+
+Running alsaqr-software's `pmu_mempol_synth` in the simulator: use `tests/pmu_mempol_synth_sim`
+(`sw_build test=~/alsaqr-software/tests/pmu_mempol_synth_sim target=pmu_bench`). On the FPGA all four cores
+are resumed by OpenOCD; in the simulation only core 0 is (core 1 is woken by the startup code, cores 2 and 3
+sleep in the boot ROM until a PLIC interrupt reaches them), and the FPGA version's wall-clock delays and table
+sizes would take hours of simulated time. The `_sim` variant builds the same sources with `-DXSIM` (wakes cores
+2 and 3 the way he-soc's `quad_boot` does) and smaller workload knobs; the FPGA build is unchanged.
 
 ### soc_lookup
 ```

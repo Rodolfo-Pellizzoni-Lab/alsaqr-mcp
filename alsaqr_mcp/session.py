@@ -394,6 +394,14 @@ def op_probe(cfg: Config, sid: str, signals: list[str], wait_s=60) -> dict:
     return out
 
 
+_PROCESS_SCOPE_RE = re.compile(r"^[A-Z][A-Za-z]*\d+_\d+$")
+
+
+def _clean_scope(name: str) -> str:
+    name = name.strip()
+    return name[1:] if name.startswith("\\") else name
+
+
 def op_scope_list(cfg: Config, sid: str, scope: str, wait_s=60) -> dict:
     d = _sdir(cfg, sid)
     if d is None:
@@ -412,7 +420,10 @@ def op_scope_list(cfg: Config, sid: str, scope: str, wait_s=60) -> dict:
     status, lines = _send(d, st, tcl, float(wait_s))
     if status != "done":
         return _err("scope_list timed out", "retry")
-    scopes = [l[4:] for l in lines if l.startswith("@@S ")]
+    # xsim lists its processes as scopes too (Always227_5119, NetRegassign115_55684, Initial424_322, Forked54_55706):
+    # drop them, and undo the escaped-identifier spelling of generate instances ('\\name[0] ' -> 'name[0]')
+    scopes = [_clean_scope(l[4:]) for l in lines if l.startswith("@@S ")]
+    scopes = [x for x in scopes if not _PROCESS_SCOPE_RE.match(x)]
     objs = [l[4:] for l in lines if l.startswith("@@O ")]
     errs = [l[4:] for l in lines if l.startswith("@@E ")]
     if errs:

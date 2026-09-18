@@ -21,44 +21,67 @@ def _err(error, fix, **extra):
 _CERR_RE = re.compile(r"^(.+?):(\d+):(?:\d+:)?\s*(?:fatal )?error:\s*(.*)$")
 
 
-def sw_build(test: str, extra_cflags: str | None = None, clean: bool = False) -> dict:
+def _bundle_of(d: Path) -> Path | None:
+    """The alsaqr-software checkout a test directory belongs to (it ships its own toolchains), else None."""
+    for parent in (d, *d.parents):
+        if (parent / "source.sh").exists() and (parent / "toolchain" / "rv64" / "bin").is_dir():
+            return parent
+    return None
+
+
+def sw_build(test: str, extra_cflags: str | None = None, clean: bool = False, target: str = "build") -> dict:
     cfg = load()
     d = Path(os.path.expanduser(test))
     if not d.is_dir():
         d = cfg.software / test
     if not (d / "Makefile").exists():
         known = sorted(p.name for p in cfg.software.iterdir() if (p / "Makefile").exists()) if cfg.software.exists() else []
-        return _err("unknown test", f"no Makefile in {d}; tests under {cfg.software}: {', '.join(known[:40])}")
+        return _err("unknown test", f"no Makefile in {d}; tests under {cfg.software}: {', '.join(known[:40])}"
+                    " (a directory path, e.g. an alsaqr-software test, is accepted too)")
+    d = d.resolve()
     name = d.name
+    target = target or "build"
     cfg.binaries.mkdir(parents=True, exist_ok=True)
-    gcc = (f"riscv64-unknown-elf-gcc -include {cfg.uint_compat} -Wno-error=int-conversion "
-           f"-Wno-error=implicit-function-declaration {extra_cflags or ''}").strip()
     env = dict(os.environ)
-    env["PATH"] = f"{cfg.riscv_gcc_bin}:{env.get('PATH', '')}"
-    env["SW_HOME"] = str(cfg.software)
+    bundle = _bundle_of(d)
+    if bundle:
+        # alsaqr-software: its own rv64 gcc, the rv32 gcc + riscv-none-elf-* shim for the APMU firmware
+        tc = bundle / "toolchain"
+        env["PATH"] = ":".join(str(p) for p in (tc / "shim", tc / "rv32" / "bin", tc / "rv64" / "bin")) + ":" + env.get("PATH", "")
+        env["SW_HOME"] = str(bundle / "tests")
+        env["ALSAQR_ROOT"] = str(bundle)
+        gcc = f"riscv64-unknown-elf-gcc {extra_cflags or ''}".strip()
+    else:
+        env["PATH"] = f"{cfg.riscv_gcc_bin}:{env.get('PATH', '')}"
+        env["SW_HOME"] = str(cfg.software)
+        gcc = (f"riscv64-unknown-elf-gcc -include {cfg.uint_compat} -Wno-error=int-conversion "
+               f"-Wno-error=implicit-function-declaration {extra_cflags or ''}").strip()
     env["HW_HOME"] = str(cfg.hardware)
     cmds = []
     if clean:
         cmds.append(["make", "clean"])
-    cmds.append(["make", "build", f"RISCV_GCC={gcc}"])
+    cmds.append(["make", target, f"RISCV_GCC={gcc}"])
     log_lines = []
     for c in cmds:
         r = subprocess.run(c, cwd=str(d), capture_output=True, text=True, env=env, timeout=900)
         log_lines += (r.stdout + r.stderr).splitlines()
-        if r.returncode != 0 and c[1] == "build":
+        if r.returncode != 0 and c[1] == target:
             errs = []
             for l in log_lines:
                 m = _CERR_RE.match(l)
                 if m:
-                    errs.append({"file": m.group(1).replace(str(cfg.software) + "/", ""), "line": int(m.group(2)), "msg": m.group(4)[:200]})
+                    errs.append({"file": m.group(1).replace(str(d.parent) + "/", ""), "line": int(m.group(2)), "msg": m.group(4)[:200]})
             log = cfg.binaries / f"{name}_build.log"
             log.write_text("\n".join(log_lines))
             return _err("build failed", "fix the reported errors", errors=errs[:15] or log_lines[-8:], log=str(log))
-    elf = d / f"{name}.riscv"
-    if not elf.exists():
-        return _err("no ELF produced", f"expected {elf}")
-    cfg.binaries.mkdir(parents=True, exist_ok=True)
-    dst = cfg.binaries / f"{name}.riscv"
+    # the ELF is <test>.riscv for `make build`; other targets name it after themselves (pmu_bench -> pmu_bench.riscv)
+    candidates = [d / f"{name}.riscv"] if target == "build" else [d / f"{target}.riscv", d / f"{name}.riscv"]
+    elf = next((e for e in candidates if e.exists()), None)
+    if elf is None:
+        found = sorted(p.name for p in d.glob("*.riscv"))
+        return _err("no ELF produced", f"expected {' or '.join(str(c) for c in candidates)}"
+                    + (f"; ELFs in {d}: {', '.join(found)}" if found else ""))
+    dst = cfg.binaries / (f"{name}.riscv" if elf.stem == name else f"{name}_{elf.stem}.riscv")
     shutil.copyfile(elf, dst)
     try:
         info = elf_info(cfg, dst)
@@ -68,7 +91,8 @@ def sw_build(test: str, extra_cflags: str | None = None, clean: bool = False) ->
     from .elf import region_of
     sections = [{"name": s["name"], "addr": f"0x{s['addr']:08x}", "size": s["size"],
                  "region": region_of(cfg, s["addr"], s["size"])} for s in info["sections"]]
-    out = {"test": name, "elf": str(dst), "entry": f"0x{info['entry']:08x}",
+    out = {"test": name, "target": target, "toolchain": "alsaqr-software bundle" if bundle else str(cfg.riscv_gcc_bin),
+           "elf": str(dst), "entry": f"0x{info['entry']:08x}",
            "tohost": f"0x{info['symbols']['tohost']:08x}" if "tohost" in info["symbols"] else None,
            "size": info["size"], "sections": sections, "checks": checks, "problems": problems,
            "next": f"sim_run(binary='{dst}')" if not problems else "fix the layout problems before sim_run"}

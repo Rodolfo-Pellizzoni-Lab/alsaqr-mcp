@@ -138,17 +138,20 @@ TOOLS = {
     # ------------------------------------------------------------------ software and navigation
     "sw_build": {
         "description": (
-            "Build a bare-metal test program from software/<test> (`make build` with the RISC-V toolchain), copy the ELF next "
-            "to the other binaries and check that it is laid out the way the simulator loads it (code/data in DRAM at "
-            "0x80000000, tohost in the on-chip SRAM). Returns compiler errors as {file, line, msg}. Note: tests that also "
-            "program the APMU core have their own build steps that this tool does not cover yet."
+            "Build a bare-metal test program (`make <target>` with the RISC-V toolchain), copy the ELF next to the other "
+            "binaries and check that it is laid out the way the simulator loads it (code/data in DRAM at 0x80000000, "
+            "tohost in the on-chip SRAM). Returns compiler errors as {file, line, msg}. test is a name under he-soc "
+            "software/ or a directory path; a directory inside an alsaqr-software checkout is built with that bundle's "
+            "own toolchains (rv64 + the rv32 shim the APMU firmware Makefiles need), so targets such as pmu_bench that "
+            "embed the PMU firmware work. extra_cflags is appended to every compiler call (e.g. '-DXSIM')."
         ),
         "schema": {"type": "object", "properties": {
             "test": {**_S, "description": "test name under software/ (e.g. hello_culsans, quad_boot) or a directory path"},
+            "target": {**_S, "description": "make target (default build); the ELF is <target>.riscv or <test>.riscv"},
             "extra_cflags": {**_S, "description": "appended to the compiler invocation"},
             "clean": {**_B, "description": "make clean first"}},
             "required": ["test"]},
-        "fn": lambda a: soc.sw_build(a["test"], a.get("extra_cflags"), bool(a.get("clean", False))),
+        "fn": lambda a: soc.sw_build(a["test"], a.get("extra_cflags"), bool(a.get("clean", False)), a.get("target", "build")),
     },
     "soc_lookup": {
         "description": (
