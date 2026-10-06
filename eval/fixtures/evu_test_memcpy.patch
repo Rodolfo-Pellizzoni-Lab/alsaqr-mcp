@@ -1,0 +1,45 @@
+--- a/evu_test/evu_test.c	2026-09-18 07:40:29.538841719 -0400
++++ b/evu_test/evu_test.c	2026-10-06 08:16:28.143192620 -0400
+@@ -63,25 +63,6 @@
+     return s;
+ }
+ 
+-static void copy_words(void *dst, const void *src, uint32_t size) {
+-    volatile uint32_t *d = (volatile uint32_t *)dst;
+-    const uint32_t *s = (const uint32_t *)src;
+-    for (uint32_t i = 0; i < (size + 3) / 4; i++)
+-        d[i] = s[i];
+-}
+-
+-static uint32_t verify_words(const void *dst, const void *src, uint32_t size) {
+-    const volatile uint32_t *d = (const volatile uint32_t *)dst;
+-    const uint32_t *s = (const uint32_t *)src;
+-    uint32_t bad = 0;
+-    for (uint32_t i = 0; i < (size + 3) / 4; i++)
+-        if (d[i] != s[i]) {
+-            if (bad < 4) printf("    ISPM word %u: image 0x%08x, memory 0x%08x\r\n", i, s[i], d[i]);
+-            bad++;
+-        }
+-    return bad;
+-}
+-
+ static int load_and_start_pmu(void) {
+     uint32_t text_size = _binary_text_section_bin_end - _binary_text_section_bin_start;
+     uint32_t data_size = _binary_data_rodata_bss_bin_end - _binary_data_rodata_bss_bin_start;
+@@ -93,14 +74,9 @@
+     asm volatile ("fence iorw, iorw" ::: "memory");
+     for (uint32_t i = 0; i < 0x200; i += 4)
+         write_32b(DSPM_BASE_ADDR + i, 0);
+-    /* Word copies only: the ISPM/DSPM SRAMs index by byte address and ignore byte strobes, so the
+-       sub-word stores memcpy uses for a tail that is not 8-byte aligned land in the wrong entries
+-       (an image of 2292 bytes lost the upper 3 bytes of its last instruction). */
+-    copy_words((void *)ISPM_BASE_ADDR, _binary_text_section_bin_start, text_size);
+-    copy_words((void *)(DSPM_BASE_ADDR + 0x200), _binary_data_rodata_bss_bin_start, data_size);
++    memcpy((void *)ISPM_BASE_ADDR, _binary_text_section_bin_start, text_size);
++    memcpy((void *)(DSPM_BASE_ADDR + 0x200), _binary_data_rodata_bss_bin_start, data_size);
+     asm volatile ("fence iorw, iorw" ::: "memory");
+-    uint32_t bad = verify_words((void *)ISPM_BASE_ADDR, _binary_text_section_bin_start, text_size);
+-    printf("    ISPM read-back: %u of %u words differ from the image\r\n", bad, (text_size + 3) / 4);
+     write_32b(PMC_BOOT_ADDR, ISPM_BASE_ADDR);
+     write_32b(PMC_STATUS_ADDR, 0);
+     asm volatile ("fence iorw, iorw" ::: "memory");
