@@ -72,7 +72,7 @@ def sw_build(test: str, extra_cflags: str | None = None, clean: bool = False, ta
             for l in log_lines:
                 m = _CERR_RE.match(l)
                 if m:
-                    errs.append({"file": m.group(1).replace(str(d.parent) + "/", ""), "line": int(m.group(2)), "msg": m.group(4)[:200]})
+                    errs.append({"file": m.group(1).replace(str(d.parent) + "/", ""), "line": int(m.group(2)), "msg": m.group(3)[:200]})
             log = cfg.binaries / f"{name}_build.log"
             log.write_text("\n".join(log_lines))
             return _err("build failed", "fix the reported errors", errors=errs[:15] or log_lines[-8:], log=str(log))
@@ -240,6 +240,13 @@ def _paths_to(cfg: Config, module: str, depth: int = 0, seen=None) -> list[str]:
 
 
 def soc_lookup(query: str) -> dict:
+    out = _soc_lookup(query)
+    if "error" not in out:  # file names in the result are relative to the hardware directory
+        out["paths_relative_to"] = str(load().hardware)
+    return out
+
+
+def _soc_lookup(query: str) -> dict:
     cfg = load()
     q = (query or "").strip()
     if not q:
@@ -332,7 +339,9 @@ def soc_bootflow() -> dict:
                    "on-chip SRAM": "0x1C00_0000, 32 KB: the tohost word (exit code) and small shared variables",
                    "boot ROM": "0x1_0000: every core starts here after reset",
                    "SCMI mailbox": "0x1040_4000: word 0 = address a woken core jumps to; +0x24 raises the wake-up interrupt",
-                   "PLIC": "0x0C00_0000 (context 2*hart+1 = machine mode of that hart)",
+                   "PLIC": "0x0C00_0000; two contexts per hart: 2*hart = machine mode (drives the core's irq_i[0], "
+                           "MEIP), 2*hart+1 = supervisor mode (irq_i[1], SEIP). Enable words at 0x0C00_2000 + 0x80*context, "
+                           "claim/complete at 0x0C20_0004 + 0x1000*context",
                    "UART": "0x4000_0000 (the mock UART the console lines come from)"},
         "how_a_program_runs": [
             {"t_ns": 0, "who": "testbench", "what": "reset and clocks; cores are held in reset for ~1.5 ms"},
@@ -346,8 +355,13 @@ def soc_bootflow() -> dict:
             {"t_ns": 2620000, "who": "test code", "what": "tests that use cores 2 and 3 arm APMU counters whose overflow interrupts wake them"},
             {"t_ns": 2840000, "who": "testbench JTAG", "what": "reads the tohost word; exit code 0 -> '[JTAG] SUCCESS', else '[JTAG] FAILED'; then $finish"},
         ],
-        "wakeups": {"core 1": "SCMI mailbox interrupt, raised by core 0's startup code",
-                    "cores 2, 3": "APMU counter-overflow interrupts (PLIC sources 156, 157), raised by test code",
+        "wakeups": {"how": "the boot ROM parks cores 1-3 in wfi with mie = 0. CVA6 leaves wfi on (mip & mie) != 0 or "
+                           "on irq_i[1], so only an interrupt enabled in the hart's supervisor context 2*hart+1 wakes it "
+                           "(contexts 3, 5, 7 for cores 1, 2, 3; the boot ROM claims there); the machine context 2*hart "
+                           "does not",
+                    "core 1": "SCMI mailbox interrupt (PLIC source 10, context 3), raised by core 0's startup code",
+                    "cores 2, 3": "APMU counter-overflow interrupts (PLIC sources 156, 157, contexts 5 and 7), raised by "
+                                  "test code",
                     "any core": "the testbench can also halt/resume a core over JTAG"},
         "if_something_goes_wrong": {
             "no '[JTAG] Halted hart 0'": "core 0 never entered debug mode: debug module or JTAG path",

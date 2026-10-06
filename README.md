@@ -38,7 +38,7 @@ state under `hardware/xsim/work/mcp/{runs,sessions,traces}/<id>/` (git-ignored, 
 RTL and testbench sources are the he-soc files themselves: edit them in place, `rtl_recompile` them, and use
 `rtl_changes` (git) to see or undo what was changed.
 
-A typical loop: `soc_bootflow` once → `sw_build` → `sim_run` → `sim_status` / `sim_uart` → if stalled,
+A typical loop: `soc_bootflow` once → `sw_build` → `sim_run` → `sim_status(wait_s=900)` → if stalled,
 `sim_stall_trace` → `sim_session` to probe signals → edit the RTL + `rtl_recompile` → `sim_run` again.
 
 ## Simulation tools
@@ -60,22 +60,26 @@ the old version until they are recompiled.
 
 ### sim_status
 ```
-in:  { run_id, since_ns?: int }
+in:  { run_id, since_ns?: int, wait_s?: int (0, max 900), until?: str, until_ns?: int }
 out: { run_id, state, elab, snapshot, binary, sim_time_ns, wall_s, rss_mb, sim_ns_per_wall_min,
        markers: [{t_ns, approx, kind: success|fail|fatal|finish|jtag|preload|error, text}], markers_truncated,
-       uart_lines, uart_hint?, stall?: {at_ns, memory_growing, meaning, next}, exit?: {rc, verdict, reason?},
-       elab_errors?, note? }
+       uart_lines, console?: [{n, t_ns, text}], console_note?, uart_hint?, wait?: {waited_s, stopped_because},
+       stall?: {at_ns, memory_growing, meaning, next}, exit?: {rc, verdict, program_exit_code, note, reason?}, elab_errors?, note? }
 ```
 Markers are the testbench's own progress lines (JTAG steps, program load, SUCCESS/FAILED, `$finish`);
 `approx: true` means the time is that of the last heartbeat before the line (10 µs resolution).
+`wait_s` blocks until the run ends, or until `until` (case-sensitive) appears in a marker or console line, or until simulated time
+reaches `until_ns` (useful to tell a hung program from a slow one); `wait.stopped_because` says which. After a wait,
+or once the run has ended, `console` carries the last 20 console lines, so one call usually tells the whole story.
 
 ### sim_uart
 ```
-in:  { run_id, since_line?: int, max_lines?: int (100, max 500), wait_s?: int (0, max 300) }
+in:  { run_id, since_line?: int, max_lines?: int (100, max 500), wait_s?: int (0, max 900), until?: str }
 out: { run_id, state, lines: [{n, host_time, t_ns, uart, text}], total, more, next_since_line?, file, note? }
 ```
-`wait_s` blocks until a new line appears, the run ends or the time is up. Cores that print at the same time
-without a lock interleave their characters.
+`wait_s` blocks until the first new line (default), until the run ends (`until: "end"`) or until a new line
+containing `until` appears; it always returns when the run ends or the time is up. Cores that print at the same
+time without a lock interleave their characters.
 
 ### sim_kill
 ```

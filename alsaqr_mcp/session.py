@@ -128,6 +128,8 @@ def _resolve(st: dict, path: str) -> str:
     p = path.strip()
     if p.startswith("/"):
         return p
+    if p in ("tb", "dut"):
+        return top if p == "tb" else f"{top}/dut"
     if p.startswith("tb/"):
         return f"{top}/{p[3:]}"
     if p.startswith("dut/"):

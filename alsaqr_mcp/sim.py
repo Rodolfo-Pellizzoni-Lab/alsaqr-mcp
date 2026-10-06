@@ -147,8 +147,9 @@ def sim_run(binary: str, timeout_s: int | None = None, tag: str | None = None) -
                  "note": "console output of the mock UART; lines interleave when cores print without the lock"},
         "logs": {"stdout": str(run_dir / "stdout.log"), "watchdog": str(run_dir / "watchdog.txt"),
                  "state": str(run_dir / "run.json")},
-        "next": [f"sim_status(run_id='{run_id}') to follow progress (phase, sim time, markers, stalls)",
-                 f"sim_uart(run_id='{run_id}') to read console output"],
+        "next": [f"sim_status(run_id='{run_id}', wait_s=900) waits for the run to end and returns the verdict and "
+                 f"console (add until='<text>' or until_ns=<ns> to return earlier)",
+                 f"sim_uart(run_id='{run_id}', since_line=<n>) for the full console"],
     }
     out.update(stale_warning(cfg))
     return out

@@ -25,7 +25,8 @@ TOOLS = {
             "0x80000000 and its tohost word into the on-chip SRAM; core 0 is started over JTAG and the other cores are woken by "
             "the software (see soc_bootflow). Returns a run_id. Build programs with sw_build (or `make build`). "
             "The compiled design is reused across runs and only rebuilt after an RTL change (~4 min). "
-            "Follow progress with sim_status(run_id); read the console with sim_uart(run_id)."
+            "To wait for it, call sim_status(run_id, wait_s=900): it blocks until the run ends and then returns the verdict "
+            "and the console, so there is no need to poll or sleep."
         ),
         "schema": {"type": "object", "properties": {
             "binary": {**_S, "description": "path to the program ELF (.riscv)"},
@@ -40,26 +41,38 @@ TOOLS = {
             "killed), simulated time in ns, wall time, memory, the testbench markers seen so far (JTAG steps, program load, "
             "SUCCESS/FAILED, $finish) with their simulated time, and the exit verdict. 'stalled' means simulated time stopped "
             "advancing and the watchdog killed the run; sim_stall_trace then shows what was executing. Compact output; raw "
-            "logs stay on disk. since_ns returns only markers after that simulated time."
+            "logs stay on disk. since_ns returns only markers after that simulated time. "
+            "Waiting: wait_s (max 900) blocks until the run ends, or until the text `until` appears in a marker or console "
+            "line, or until simulated time reaches until_ns (e.g. well past the time SUCCESS is expected, to tell a hung "
+            "program from a slow one); `wait` says why it returned. After a wait, or once the run has ended, the result "
+            "includes the last console lines, so a separate sim_uart call is rarely needed."
         ),
         "schema": {"type": "object", "properties": {
-            "run_id": _S, "since_ns": {**_I, "description": "only markers with t_ns > since_ns"}},
+            "run_id": _S, "since_ns": {**_I, "description": "only markers with t_ns > since_ns"},
+            "wait_s": {**_I, "description": "block up to this many seconds (max 900) for the run to end or a condition below"},
+            "until": {**_S, "description": "with wait_s: also return as soon as this text (case-sensitive) appears in a marker or console line"},
+            "until_ns": {**_I, "description": "with wait_s: also return once simulated time reaches this many ns"}},
             "required": ["run_id"]},
-        "fn": lambda a: status.sim_status(a["run_id"], a.get("since_ns")),
+        "fn": lambda a: status.sim_status(a["run_id"], a.get("since_ns"), a.get("wait_s", 0), a.get("until"),
+                                          a.get("until_ns")),
     },
     "sim_uart": {
         "description": (
             "Console output of a run: every line the software printed through the UART, with n (line number), t_ns "
-            "(simulated time), uart index and text. Use since_line=<last n seen> for deltas; wait_s blocks up to that long for "
-            "new lines (0 = return immediately). When several cores print at the same time without a lock their characters "
-            "interleave."
+            "(simulated time), uart index and text. Use since_line=<last n seen> for deltas. wait_s blocks up to that long "
+            "(max 900): by default until the first new line; with until='end' until the run ends; with until=<text> until a "
+            "new line containing that text appears. When several cores print at the same time without a lock their "
+            "characters interleave."
         ),
         "schema": {"type": "object", "properties": {
             "run_id": _S, "since_line": {**_I, "description": "return lines with n > since_line"},
             "max_lines": {**_I, "description": "cap (default 100, max 500)"},
-            "wait_s": {**_I, "description": "block up to this many seconds for new lines (max 300)"}},
+            "wait_s": {**_I, "description": "block up to this many seconds (max 900); see until"},
+            "until": {**_S, "description": "with wait_s: 'end' = wait for the run to end; any other text = wait for a "
+                                           "new line containing it (default: the first new line)"}},
             "required": ["run_id"]},
-        "fn": lambda a: status.sim_uart(a["run_id"], a.get("since_line", 0), a.get("max_lines", 100), a.get("wait_s", 0)),
+        "fn": lambda a: status.sim_uart(a["run_id"], a.get("since_line", 0), a.get("max_lines", 100), a.get("wait_s", 0),
+                                        a.get("until")),
     },
     "sim_kill": {
         "description": "Stop a run (run_id) or an interactive session (session_id), or everything (all=true).",

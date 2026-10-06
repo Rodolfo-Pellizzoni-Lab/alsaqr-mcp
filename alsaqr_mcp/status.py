@@ -23,6 +23,9 @@ _MARKERS = (
     ("error", re.compile(r"^(ERROR|Error):|^\*\* Error")),
 )
 MAX_MARKERS = 40
+MAX_WAIT_S = 900  # Claude Code's MCP tool-call timeout is far longer (MCP_TOOL_TIMEOUT)
+CONSOLE_TAIL = 20
+_ACTIVE = ("queued", "elab", "running")
 
 
 def _err(error, fix, **extra):
@@ -105,12 +108,38 @@ def _watchdog(path: Path):
     return info
 
 
-def sim_status(run_id: str, since_ns: int | None = None) -> dict:
+def _wait(d: Path, wait_s: int, until: str | None, until_ns: int | None) -> dict:
+    """Block until the run ends, `until` appears in a marker or console line, simulated time reaches `until_ns`,
+    or wait_s elapses. Returns {waited_s, stopped_because}."""
+    t0 = time.time()
+    while True:
+        if load_state(d).get("phase") not in _ACTIVE:
+            why = "run ended"
+            break
+        last_tick_ps, markers, _, _ = _scan_stdout(d / "stdout.log", None)
+        if until and (any(until in m["text"] for m in markers)
+                      or any(until in l["text"] for l in _read_uart(d / "uart.txt"))):
+            why = f"found '{until}'"
+            break
+        if until_ns is not None and last_tick_ps is not None and last_tick_ps // 1000 >= until_ns:
+            why = f"simulated time reached {until_ns} ns"
+            break
+        if time.time() - t0 >= wait_s:
+            why = f"wait_s ({wait_s} s) elapsed, run still going: call again to keep waiting"
+            break
+        time.sleep(3)
+    return {"waited_s": int(time.time() - t0), "stopped_because": why}
+
+
+def sim_status(run_id: str, since_ns: int | None = None, wait_s: int = 0, until: str | None = None,
+               until_ns: int | None = None) -> dict:
     cfg = load()
     d = run_dir(cfg, run_id)
     if d is None:
         known = sorted(p.name for p in cfg.runs.iterdir()) if cfg.runs.exists() else []
         return _err("unknown run_id", f"known runs: {', '.join(known[-10:]) or 'none'}")
+    wait_s = max(0, min(int(wait_s or 0), MAX_WAIT_S))
+    waited = _wait(d, wait_s, until, None if until_ns is None else int(until_ns)) if wait_s else None
     st = load_state(d)
     phase = st.get("phase")
     last_tick_ps, markers, uart_lines, truncated = _scan_stdout(d / "stdout.log", since_ns)
@@ -128,7 +157,16 @@ def sim_status(run_id: str, since_ns: int | None = None) -> dict:
         "wall_s": wall_s, "rss_mb": wd.get("rss_mb"), "sim_ns_per_wall_min": wd.get("sim_ns_per_wall_min"),
         "markers": markers, "markers_truncated": truncated, "uart_lines": uart_lines,
     }
-    if uart_lines:
+    if waited:
+        out["wait"] = waited
+    if uart_lines and (waited or state not in ("queued", "elaborating", "running")):
+        # a wait or a finished run: hand back the console too, so one call tells the whole story
+        lines = _read_uart(d / "uart.txt")
+        out["console"] = [{"n": l["n"], "t_ns": l["t_ns"], "text": l["text"]} for l in lines[-CONSOLE_TAIL:]]
+        if len(lines) > CONSOLE_TAIL:
+            out["console_note"] = (f"last {CONSOLE_TAIL} of {len(lines)} lines; "
+                                   f"sim_uart(run_id='{run_id}', since_line=0) for all of them")
+    elif uart_lines:
         out["uart_hint"] = f"sim_uart(run_id='{run_id}') for the {uart_lines} console lines"
     if state == "stalled" or wd.get("stalled_at_ns") is not None:
         out["stall"] = {"at_ns": wd.get("stalled_at_ns"), "memory_growing": wd.get("rss_growing", False),
@@ -138,7 +176,14 @@ def sim_status(run_id: str, since_ns: int | None = None) -> dict:
         rc = st.get("rc")
         verdict = "success" if any(m["kind"] == "success" for m in markers) else (
             "fail" if any(m["kind"] in ("fail", "fatal") for m in markers) else state)
-        out["exit"] = {"rc": rc, "verdict": verdict}
+        code = 0 if verdict == "success" else None
+        for m in markers:
+            mc = re.search(r"FAILED: return code (\d+)", m["text"])
+            if mc:
+                code = int(mc.group(1))
+        out["exit"] = {"rc": rc, "verdict": verdict, "program_exit_code": code,
+                       "note": "rc is the simulator process's exit status; program_exit_code is what the program "
+                               "returned (from the testbench's SUCCESS / 'FAILED: return code N' line)"}
         if state == "timeout":
             out["exit"]["reason"] = f"wall-clock limit {st.get('timeout_s')} s reached; raise timeout_s or check for a hang"
     if state == "elab_failed":
@@ -164,21 +209,29 @@ def _read_uart(path: Path):
     return lines
 
 
-def sim_uart(run_id: str, since_line: int = 0, max_lines: int = 100, wait_s: int = 0) -> dict:
+def sim_uart(run_id: str, since_line: int = 0, max_lines: int = 100, wait_s: int = 0,
+             until: str | None = None) -> dict:
     cfg = load()
     d = run_dir(cfg, run_id)
     if d is None:
         return _err("unknown run_id", "use the run_id returned by sim_run")
     since_line = int(since_line or 0)
     max_lines = max(1, min(int(max_lines or 100), 500))
-    wait_s = max(0, min(int(wait_s or 0), 300))
+    wait_s = max(0, min(int(wait_s or 0), MAX_WAIT_S))
+    needle = until if until and until != "end" else None
     deadline = time.time() + wait_s
     while True:
         st = load_state(d)
         lines = _read_uart(d / "uart.txt")
         new = [l for l in lines if l["n"] > since_line]
-        active = st.get("phase") in ("queued", "elab", "running")
-        if new or not active or time.time() >= deadline:
+        active = st.get("phase") in _ACTIVE
+        if until == "end":
+            done = False                                        # only the end of the run (or the deadline) stops it
+        elif needle:
+            done = any(needle in l["text"] for l in new)
+        else:
+            done = bool(new)                                    # default: the first new line
+        if done or not active or time.time() >= deadline:
             break
         time.sleep(2)
     out = {
