@@ -96,8 +96,10 @@ def sw_build(test: str, extra_cflags: str | None = None, clean: bool = False, ta
     out = {"test": name, "target": target, "toolchain": f"{bundle}/toolchain" if bundle else str(cfg.riscv_gcc_bin),
            "elf": str(dst), "entry": f"0x{info['entry']:08x}",
            "tohost": f"0x{info['symbols']['tohost']:08x}" if "tohost" in info["symbols"] else None,
-           "size": info["size"], "sections": sections, "checks": checks, "problems": problems,
+           "size": info["size"], "checks": checks, "problems": problems,
            "next": f"sim_run(binary='{dst}')" if not problems else "fix the layout problems before sim_run"}
+    if problems:
+        out["sections"] = sections   # only needed to see what is misplaced
     return out
 
 
@@ -342,7 +344,12 @@ def soc_bootflow() -> dict:
                    "PLIC": "0x0C00_0000; two contexts per hart: 2*hart = machine mode (drives the core's irq_i[0], "
                            "MEIP), 2*hart+1 = supervisor mode (irq_i[1], SEIP). Enable words at 0x0C00_2000 + 0x80*context, "
                            "claim/complete at 0x0C20_0004 + 0x1000*context",
-                   "UART": "0x4000_0000 (the mock UART the console lines come from)"},
+                   "UART": "0x4000_0000 (the mock UART the console lines come from)",
+                   "accelerator socket": "0x1000_0000 (the cluster window; the cluster is excluded): slot s at "
+                                         "+s*0x1_0000, interrupt PLIC ID 9; empty slots answer DECERR with data 0xdeadbeef (CVA6 takes no fault). accel_list / accel_add"},
+        "test_helpers": "software/soc_tests/include/soc_test.h: CHECK(), trap guard (any exception -> 'TRAP ...' line, "
+                        "exit 127 instead of hanging), soc_wake_all() for cores 2-3, soc_barrier(); sim_regress runs the "
+                        "SoC validation suite",
         "how_a_program_runs": [
             {"t_ns": 0, "who": "testbench", "what": "reset and clocks; cores are held in reset for ~1.5 ms"},
             {"t_ns": 1000000, "who": "testbench JTAG", "what": "debug module initialised -> marker '[JTAG] Initialization success'"},

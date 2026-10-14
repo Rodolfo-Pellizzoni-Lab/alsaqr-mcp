@@ -77,8 +77,12 @@ hierarchical path, and what the load gets back (data and AXI response)?""",
             (1, "EXCLUDE_CLUSTER, set by `define at hardware/host/al_saqr.sv line 15 AND by -d on the compile "
                 "command line from SOC_DEFINES in hardware/xsim/env.sh (0.5 for only one of the two)"),
             (1, "window 0x1000_0000 - 0x1040_0000 (ClusterBase, ClusterLength 0x40_0000 in ariane_soc_pkg.sv)"),
-            (1, "axi_err_slv instance clusternotimplemented in al_saqr, path dut/clusternotimplemented"),
-            (1, "returns DECERR (axi_err_slv default Resp) with read data 0xdeadbeefdeadbeef (RespData)"),
+            # (until 2026-10-14 an axi_err_slv sat in the cluster's place, but on the undriven tlb_to_cluster bus:
+            # a load from the window would have hung. The accelerator socket replaced it.)
+            (1, "the accelerator socket: accel_socket instance i_accel_socket in al_saqr, path dut/i_accel_socket "
+                "(hardware/accel/accel_socket.sv; slots generated in accel_slots.sv)"),
+            (1, "an empty slot (or an address past the last slot) returns DECERR with read data 0xdeadbeef on both "
+                "32-bit lanes; a registered accelerator answers from its registers (the example in slot 0)"),
         ],
     },
     "N4_decode": {

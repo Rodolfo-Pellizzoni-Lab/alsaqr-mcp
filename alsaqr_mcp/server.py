@@ -40,7 +40,7 @@ def handle(msg: dict):
         try:
             result = tools.call(name, args)
             is_err = isinstance(result, dict) and "error" in result
-            _reply(id_, {"content": [{"type": "text", "text": json.dumps(result, indent=1)}], "isError": is_err})
+            _reply(id_, {"content": [{"type": "text", "text": json.dumps(result, separators=(",", ":"))}], "isError": is_err})
         except tools.UnknownTool:
             _reply(id_, error={"code": -32601, "message": f"unknown tool {name}"})
         except Exception as e:  # tool crash: report, keep serving

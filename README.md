@@ -21,7 +21,7 @@ The goal of this project is to have some bare bone tools to help any AI agent na
 
 ```
 python3 -m alsaqr_mcp serve                          # MCP over stdio
-python3 -m alsaqr_mcp list                           # tool schemas
+python3 -m alsaqr_mcp list [prefix]                  # tool schemas (e.g. list accel)
 python3 -m alsaqr_mcp sim_run binary=/path/x.riscv   # any tool from the CLI: key=value, JSON for lists
 python3 -m alsaqr_mcp sim_session op=probe session_id=s1 'signals=["i_host_domain/i_axi_llc/slv_req_i"]'
 ```
@@ -32,7 +32,7 @@ Setup: the tools drive the in-tree xsim flow of the he-soc repository's `xsim-po
 and build the simulator library once with `hardware/xsim/build.sh` (~2 min); every tool reports
 `{error, fix}` if either is missing. Paths (he-soc checkout, RISC-V toolchain, Vivado) are in `config.json`.
 
-Conventions: times are simulated nanoseconds (`*_ns`); outputs are compact JSON and raw logs stay on disk (their
+Conventions: times are simulated nanoseconds (`*_ns`); outputs are compact JSON (no indentation) and raw logs stay on disk (their
 paths are returned); errors are `{error, fix}`. Runs, sessions and traces are background processes with their
 state under `hardware/xsim/work/mcp/{runs,sessions,traces}/<id>/` (git-ignored, next to the compiled library).
 RTL and testbench sources are the he-soc files themselves: edit them in place, `rtl_recompile` them, and use
@@ -145,12 +145,80 @@ Compiles the files into the simulator library with the include paths and defines
 records the compile (that is what `in_library` and `stale_sources` compare against). The next `sim_run` /
 `sim_session` / `sim_stall_trace` rebuilds the design.
 
+## Validation tools
+
+### sim_regress
+Build and run several self-checking programs in parallel; one compact table back.
+```
+in:  { suite?: soc|accel|all (soc), tests?: [name|path], regress_id?: str, wait_s?: int (900, max 900) }
+out: { regress_id, passed, failed, running, wall_s, recompiled?, note?, next?,
+       tests: [{test, run_id, state, result: pass|fail|running|build_error, exit_code?, sim_ms, summary? | detail?, stall?}] }
+```
+`soc` = he-soc `software/soc_tests` + hello_culsans + quad_boot:
+
+| Test | What it checks |
+|---|---|
+| t_mem | core 0 on cached DRAM (L1 -> CCU -> LLC -> DRAM): byte/half/word/dword writes and reads, byte merge, a 64 KB eviction sweep; the same on the uncached on-chip SRAM |
+| t_atomics | every AMO (add, swap, and, or, xor, min/max signed and unsigned, 32-bit on the upper word) with its returned old value, LR/SC success and SC-without-reservation failure, on DRAM and on SRAM |
+| t_smp | 4 cores woken (mailbox + APMU), contended amoadd and LR/SC counters, per-core cache lines read by core 0, a message-passing ring between cores |
+| t_irq | CLINT machine software interrupt (msip), CLINT timer interrupt (mtimecmp), PLIC priority/threshold registers |
+| t_socket | accelerator socket: accesses past the last slot return DECERR / 0xdeadbeef (both lanes, 32- and 64-bit) instead of hanging |
+
+`accel` = the C test of every registered accelerator. Self-checking programs use `software/soc_tests/include/soc_test.h`
+(`CHECK`, a trap guard that turns any exception into a `TRAP mcause=.. mepc=.. mtval=..` line and exit code 127,
+`soc_wake_all()` for cores 2-3, `soc_barrier()`); their exit code is the number of failed checks. Accelerator and socket
+sources edited since their last compile are recompiled first. If tests are still running when `wait_s` is up, call
+again with `regress_id`.
+
+## Accelerator tools
+
+Custom accelerators go into the accelerator socket in the cluster window (he-soc `hardware/accel/README.md`): slot s
+has its registers at `0x1000_0000 + s*0x1_0000`, a 64-bit memory master port into the SoC and an interrupt (PLIC ID 9).
+Every accelerator has the same ports (a strobe/ack register port, a req/gnt/rvalid memory port, irq_o).
+
+### accel_add
+```
+in:  { name, slot?: 0-7 }
+out: { name, slot, base, irq, files: {rtl, unit_test, sw_test}, template, contract, next }
+```
+Creates `hardware/accel/<name>/<name>.sv` from a working template (dst[i] = compute(src[i], ARG) over LEN 64-bit words,
+CTRL/STATUS/ID/CYCLES registers), its unit test `hardware/accel/<name>/accel_test.svh`, and its SoC test
+`software/accel/<name>/<name>.c`; registers it in `hardware/accel/slots.json`, regenerates `accel_slots.sv` and the
+managed block of `hardware/Bender.yml`, and regenerates `compile.sh`. Every `.sv` in the accelerator's directory is
+compiled (packages `*_pkg.sv` first).
+
+### accel_unit_test
+```
+in:  { name, seed?: int (1), waves?: bool }
+out: { name, result: pass|fail|compile_error|elaborate_error|no_verdict, summary, wall_s, log, output?: [the test's $display lines],
+       failures?, errors?: [{file,line,msg}], mem_log?, vcd? }
+```
+The accelerator alone in `hardware/accel/tb/accel_tb.sv` (~5 s): a register driver, a sparse 64-bit memory with random
+gnt/rvalid stalls and port-protocol checks, and helpers for the test body (wr, rd, rd_check, mem_write, mem_read,
+mem_fill, check, wait_irq, wait_reg, cycles, mem_stall; max_cycles / reg_timeout settable). Functions or tasks for a
+reference model go in `accel_test_decls.svh` (included at module scope). Every check/rd_check/wait_* call counts as one
+check; port-protocol checks count only when they fail. The SoC library is visible as `work`, so common_cells etc. can
+be instantiated. Elaborated with -O0 (xsim 2024.2 mis-evaluates automatic-function calls in loop bodies at -O1/-O2).
+
+### accel_soc_test
+```
+in:  { name, wait_s?: int (900; 0 = return run_id), extra_cflags? }
+out: { name, slot, recompiled?, run_id, elab, state, sim_time_ns, verdict, exit_code,
+       console: ["t_ns: line"] (TEST/CHECK FAIL/TRAP lines + the last 6), console_note?, stall? }
+     | { result: compile_error|sw_build_error|sim_run_error, ... }
+```
+Compiles the changed socket/accelerator sources into the SoC library, builds the C test, runs it on the whole SoC and
+waits for the verdict (re-elaboration ~4 min after an RTL change, then ~2-3 min).
+
+### accel_list / accel_remove
+`accel_list {}` -> slots, bases, RTL files, free slots. `accel_remove {name}` frees the slot (files are kept).
+
 ## Software and navigation tools
 
 ### sw_build
 ```
 in:  { test: name|dir, target?: str (build), extra_cflags?: str, clean?: bool }
-out: { test, target, toolchain, elf, entry, tohost, size, sections: [{name, addr, size, region: dram|sram}], checks,
+out: { test, target, toolchain, elf, entry, tohost, size, checks, sections? (only with problems): [{name, addr, size, region}],
        problems, next }
 err: unknown test (lists the available ones) | build failed {errors: [{file, line, msg}], log} | no ELF produced
 ```

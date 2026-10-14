@@ -29,8 +29,9 @@ def main():
     if sys.argv[1] == "serve":
         server.main()
         return
-    if sys.argv[1] == "list":
-        print(json.dumps(tools.list_tools(), indent=1))
+    if sys.argv[1] == "list":   # optional name prefix filter: list accel
+        pre = sys.argv[2] if len(sys.argv) > 2 else ""
+        print(json.dumps([t for t in tools.list_tools() if t["name"].startswith(pre)], indent=1))
         return
     try:
         print(json.dumps(tools.call(sys.argv[1], _parse(sys.argv[2:])), indent=1))

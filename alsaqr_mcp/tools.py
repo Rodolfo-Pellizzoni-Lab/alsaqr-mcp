@@ -3,8 +3,10 @@
 Simulation: sim_run, sim_status, sim_uart, sim_kill, sim_session, sim_stall_trace
 RTL edits:  rtl_changes, rtl_recompile
 Software and navigation: sw_build, soc_lookup, soc_bootflow
+Validation: sim_regress
+Accelerators: accel_add, accel_list, accel_unit_test, accel_soc_test, accel_remove
 """
-from . import rtl, session, sim, soc, stall, status
+from . import accel, regress, rtl, session, sim, soc, stall, status
 
 
 class UnknownTool(Exception):
@@ -185,6 +187,84 @@ TOOLS = {
         ),
         "schema": {"type": "object", "properties": {}},
         "fn": lambda a: soc.soc_bootflow(),
+    },
+    # ------------------------------------------------------------------ validation
+    "sim_regress": {
+        "description": (
+            "Build and run a set of self-checking test programs in parallel and return one compact pass/fail table "
+            "(per test: result, exit code, simulated ms, and the CHECK FAIL / TRAP lines of failing tests). "
+            "suite='soc' (default) validates the SoC: t_mem (DRAM through L1/CCU/LLC with every access size and an "
+            "eviction sweep, on-chip SRAM), t_atomics (every AMO + LR/SC on DRAM and SRAM), t_smp (4 cores: wake-up, "
+            "contended AMO and LR/SC counters, coherence, message passing), t_irq (CLINT software and timer interrupts, "
+            "PLIC registers), t_socket (accelerator socket error responses), hello_culsans, quad_boot. suite='accel' runs "
+            "every registered accelerator's C test, 'all' both; or tests=[names under he-soc software/ or paths]. "
+            "Blocks up to wait_s (max 900); a typical suite needs ~3 min (plus ~4 min if the design was changed). If "
+            "tests are still running it returns regress_id: call again with it to keep waiting."
+        ),
+        "schema": {"type": "object", "properties": {
+            "suite": {**_S, "description": "soc | accel | all (default soc)"},
+            "tests": {**_LS, "description": "explicit test list instead of a suite (max 10)"},
+            "regress_id": {**_S, "description": "continue waiting for an earlier regression"},
+            "wait_s": {**_I, "description": "block up to this many seconds (default and max 900)"}}},
+        "fn": lambda a: regress.sim_regress(a.get("suite"), a.get("tests"), a.get("regress_id"), a.get("wait_s", 900)),
+    },
+    # ------------------------------------------------------------------ accelerators
+    "accel_add": {
+        "description": (
+            "Add a custom hardware accelerator to the SoC. The accelerator socket sits in the cluster window: slot s has "
+            "its registers at 0x10000000 + s*0x10000 (64 KB), a 64-bit memory master port into the SoC (DRAM, on-chip "
+            "SRAM), and an interrupt (PLIC ID 9). This creates, from a working template (a DMA-style engine computing "
+            "dst[i] = f(src[i]) with CTRL/STATUS/ID registers): hardware/accel/<name>/<name>.sv (edit the RTL), "
+            "hardware/accel/<name>/accel_test.svh (unit test body), software/accel/<name>/<name>.c (SoC test), and wires "
+            "the module into the socket and the build. The port contract is in the RTL header and hardware/accel/README.md. "
+            "Then: accel_unit_test (~5 s) and accel_soc_test (whole SoC, ~6-8 min). Extra .sv files dropped in "
+            "hardware/accel/<name>/ are picked up automatically."
+        ),
+        "schema": {"type": "object", "properties": {
+            "name": {**_S, "description": "lower-case identifier; becomes the module name"},
+            "slot": {**_I, "description": "slot 0-7 (default: first free)"}}, "required": ["name"]},
+        "fn": lambda a: accel.accel_add(a["name"], a.get("slot")),
+    },
+    "accel_list": {
+        "description": "Registered accelerators: slot, register base, RTL files, C test directory; and the free slots.",
+        "schema": {"type": "object", "properties": {}},
+        "fn": lambda a: accel.accel_list(),
+    },
+    "accel_unit_test": {
+        "description": (
+            "Compile and simulate one accelerator alone in the generic unit testbench (no SoC; ~5 s). The test body is "
+            "hardware/accel/<name>/accel_test.svh (inside an initial block; functions/tasks for a reference model go "
+            "in accel_test_decls.svh, included at module scope), with helpers wr/rd/rd_check (registers), mem_write/mem_read/mem_fill "
+            "(a sparse 64-bit memory behind the accelerator's memory port, with random stalls and protocol checks), "
+            "check, wait_irq, wait_reg, cycles; max_cycles / reg_timeout can be set (full list in "
+            "hardware/accel/tb/accel_tb.sv). Every check/rd_check/wait_* call counts as one check. Returns pass/fail, the "
+            "test's own $display lines (output), the log path and the failing checks, or compile/elaboration errors with file:line. The SoC's IP library is visible, so the "
+            "accelerator may instantiate common_cells etc. waves=true writes a VCD of the accelerator's signals."
+        ),
+        "schema": {"type": "object", "properties": {
+            "name": _S, "seed": {**_I, "description": "random seed for the memory stalls (default 1)"},
+            "waves": {**_B, "description": "dump a VCD of every signal inside the accelerator"}}, "required": ["name"]},
+        "fn": lambda a: accel.accel_unit_test(a["name"], a.get("seed", 1), bool(a.get("waves", False))),
+    },
+    "accel_soc_test": {
+        "description": (
+            "Run an accelerator inside the whole SoC: compiles the accelerator and socket sources that changed into the "
+            "simulator library, builds software/accel/<name>/<name>.c, simulates it (the design is re-elaborated after "
+            "an RTL change, ~4 min, then ~2-3 min of simulation) and waits up to wait_s (max 900) for the verdict. "
+            "Returns the result (exit code = number of failed checks), the TEST / CHECK FAIL / TRAP console lines plus the "
+            "last console lines, or "
+            "compile errors. A register read from an empty slot, or one the accelerator does not acknowledge within 4096 "
+            "cycles, returns 0xdeadbeef instead of hanging (CVA6 ignores the AXI error response)."
+        ),
+        "schema": {"type": "object", "properties": {
+            "name": _S, "wait_s": {**_I, "description": "block up to this many seconds (default/max 900; 0 = return the run_id)"},
+            "extra_cflags": {**_S, "description": "appended to the C compiler flags"}}, "required": ["name"]},
+        "fn": lambda a: accel.accel_soc_test(a["name"], a.get("wait_s", 900), a.get("extra_cflags")),
+    },
+    "accel_remove": {
+        "description": "Unregister an accelerator (frees its slot; its files are kept).",
+        "schema": {"type": "object", "properties": {"name": _S}, "required": ["name"]},
+        "fn": lambda a: accel.accel_remove(a["name"]),
     },
 }
 
