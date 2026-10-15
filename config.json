@@ -47,5 +47,43 @@
   },
   "stall_idle_s": 180,
   "default_timeout_s": 7200,
-  "toolchain_bundle": "~/alsaqr-software"
+  "toolchain_bundle": "~/alsaqr-software",
+  "fpga": {
+    "dir": "~/he-soc/hardware/fpga",
+    "env": {
+      "VIVADO_VERSION": "vitis-2020.2",
+      "BOARD": "vcu118",
+      "XILINX_PART": "xcvu9p-flga2104-2L-e",
+      "XILINX_BOARD": "xilinx.com:vcu118:part0:2.0",
+      "AXI_ID_DDR_WIDTH": "9",
+      "MAIN_MEM": "DDR4",
+      "SIMPLE_PAD": "SPI-I2C-UART-SDIO",
+      "USE_OT": "0",
+      "ETH2FMC_NO_PAD": "0",
+      "NUM_CORES": "4"
+    },
+    "path_prepend": "~/.cache/he-soc-simexp/fpga_bin",
+    "soc_mhz": 50,
+    "directives": {
+      "opt": "Default",
+      "place": "AltSpreadLogic_high",
+      "route": "Default"
+    },
+    "builds": "~/he-soc/hardware/xsim/work/mcp/fpga"
+  },
+  "board": {
+    "bundle": "~/alsaqr-software",
+    "uart": "/dev/ttyUSB3",
+    "baud": 38400,
+    "openocd_cores": 2,
+    "ddr_wait_s": 30,
+    "run_ms": 8000,
+    "linux": {
+      "payload": "~/alsaqr-software/linux/prebuilt/fw_payload.elf",
+      "dtb": "~/alsaqr-software/linux/prebuilt/alsaqr.dtb",
+      "dtb_addr": "0x81800000",
+      "num_harts": 4,
+      "console_capture_s": 7200
+    }
+  }
 }

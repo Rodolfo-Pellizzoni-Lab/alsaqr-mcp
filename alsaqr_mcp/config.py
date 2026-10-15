@@ -40,6 +40,25 @@ class Config:
         # alsaqr-software checkout whose toolchains build tests that live outside he-soc software/ (optional)
         tb = data.get("toolchain_bundle")
         self.toolchain_bundle = Path(os.path.expanduser(tb)) if tb else None
+        # FPGA bitstream builds (hardware/fpga in-tree flow) and the connected VCU118 board (optional sections)
+        fp = data.get("fpga", {})
+        self.fpga_dir = Path(os.path.expanduser(fp["dir"])) if fp.get("dir") else self.hardware / "fpga"
+        self.fpga_builds = Path(os.path.expanduser(fp["builds"])) if fp.get("builds") else self.state / "fpga"
+        self.fpga_env = dict(fp.get("env", {}))                 # BOARD, XILINX_PART, MAIN_MEM, NUM_CORES, ... of setup.sh
+        self.fpga_path_prepend = os.path.expanduser(fp.get("path_prepend", ""))     # wrappers the IP Makefiles expect (vivado-2018.2, vitis-2020.2)
+        self.fpga_soc_mhz = float(fp.get("soc_mhz", 50))
+        self.fpga_directives = {"opt": "Default", "place": "AltSpreadLogic_high", "route": "Default", **fp.get("directives", {})}
+        bd = data.get("board", {})
+        self.board_bundle = Path(os.path.expanduser(bd["bundle"])) if bd.get("bundle") else self.toolchain_bundle
+        self.board_uart = bd.get("uart", "/dev/ttyUSB3")
+        self.board_baud = int(bd.get("baud", 38400))
+        self.board_openocd_cores = int(bd.get("openocd_cores", 2))
+        self.board_ddr_wait_s = int(bd.get("ddr_wait_s", 30))
+        self.board_sleep_ms = int(bd.get("run_ms", 8000))
+        self.board_linux = dict(bd.get("linux", {}))
+        if self.board_bundle and not self.board_linux.get("payload"):
+            self.board_linux.setdefault("payload", str(self.board_bundle / "linux" / "prebuilt" / "fw_payload.elf"))
+            self.board_linux.setdefault("dtb", str(self.board_bundle / "linux" / "prebuilt" / "alsaqr.dtb"))
 
     def flow_problem(self) -> dict | None:
         """{error, fix} when the xsim flow is not usable (wrong branch, library not built), else None."""
