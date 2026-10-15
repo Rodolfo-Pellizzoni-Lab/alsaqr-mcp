@@ -237,7 +237,7 @@ out: { build_id, phase, elapsed_s, wns_place?, timing: {setup_failing, hold_fail
        wns, whs, unrouted, soc_clk_mhz (from the MMCM's attributes), clk_constraint_mhz}, hold_failing_endpoints?,
        sources (where each number comes from), verdict: OK | FAIL, bitstream, errors?, logs }   (no build_id: the last builds)
 ```
-A build is a detached `scripts/fpga_build.sh`: the in-tree `run.tcl` project setup and synthesis (`make constr`, the
+A build is a detached `scripts/fpga_build.sh`: the Vivado file list regenerated from Bender.yml (`fpga.bender_make`), the in-tree `run.tcl` project setup and synthesis (`make constr`, the
 SoC clock period substituted into `timing_constr.xdc`, ~40 min), one linked checkpoint with the IP contents and
 constraints, then `scripts/fpga_impl.tcl` (opt / place / route / gate / bitstream, ~2-3 h, 50 MHz, 4 cores, DDR4, LLC).
 State in `<state>/fpga/<build_id>/build.json`, Vivado logs and reports next to it. The gate: 0 failing setup endpoints,

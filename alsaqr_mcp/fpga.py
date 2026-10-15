@@ -68,7 +68,8 @@ def fpga_build(tag: str | None = None, opt: str | None = None, place: str | None
     env.update({"BUILD_DIR": str(bdir), "FPGA_DIR": str(cfg.fpga_dir), "SYNTH_DCP": synth_dcp,
                 "OPT_DIR": directives["opt"], "PLACE_DIR": directives["place"], "ROUTE_DIR": directives["route"],
                 "SOC_PERIOD_NS": f"{1000.0 / cfg.fpga_soc_mhz:g}", "VIVADO_SETTINGS": cfg.vivado_settings,
-                "FPGA_ENV": "\n".join(f"{k}={v}" for k, v in cfg.fpga_env.items()), "SCRIPTS": str(ROOT / "scripts")})
+                "FPGA_ENV": "\n".join(f"{k}={v}" for k, v in cfg.fpga_env.items()), "SCRIPTS": str(ROOT / "scripts"),
+                "HW_DIR": str(cfg.hardware), "BENDER_MAKE": cfg.fpga_bender_make})
     if cfg.fpga_path_prepend:
         env["PATH"] = cfg.fpga_path_prepend + ":" + env.get("PATH", "")
     with open(bdir / "runner.log", "w") as out:

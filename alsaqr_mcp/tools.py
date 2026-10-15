@@ -276,7 +276,8 @@ TOOLS = {
     "fpga_build": {
         "description": (
             "Build a VCU118 bitstream of the he-soc working tree (4 cores, DDR4, LLC, 50 MHz SoC clock) in the background and "
-            "return a build_id: the in-tree project setup + synthesis (~40 min), then opt / place / route / a timing gate / "
+            "return a build_id: the Vivado file list is regenerated from Bender.yml first (new RTL files are picked up), then "
+            "the in-tree project setup + synthesis (~40 min), then opt / place / route / a timing gate / "
             "write_bitstream in non-project mode (~2-3 h). The gate accepts only: 0 failing setup endpoints, no hold failures "
             "other than the known adv_timer clock-as-data endpoints, every net routed, and the MMCM really generating the "
             "SoC clock (a stale IP output once gave 20 MHz under a 50 MHz constraint). Defaults are the directives that "

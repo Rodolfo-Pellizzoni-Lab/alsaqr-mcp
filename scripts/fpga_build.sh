@@ -17,6 +17,10 @@ cd "$FPGA_DIR" || fail constr "no fpga dir $FPGA_DIR"
 if [ -z "${SYNTH_DCP:-}" ]; then
   # ---------- constraints + project + synthesis (the in-tree run.tcl up to open_run), then one linked checkpoint ----------
   phase constr
+  # the Vivado file list (fpga/alsaqr/tcl/generated/compile.tcl) is generated from Bender.yml: refresh it so a file
+  # added to Bender.yml is synthesized (the Makefile only needs the tool variables to exist)
+  ( cd "$HW_DIR" && RISCV=${RISCV:-/x} SW_HOME=${SW_HOME:-/x} HW_HOME=${HW_HOME:-/x} QUESTASIM_HOME=${QUESTASIM_HOME:-/x} \
+    make $BENDER_MAKE ) > "$BUILD_DIR/bender.log" 2>&1 || fail constr "bender file list failed (bender.log)"
   make clean > "$BUILD_DIR/make_clean.log" 2>&1
   make constr > "$BUILD_DIR/make_constr.log" 2>&1 || fail constr "make constr failed (see make_constr.log)"
   # launch_runs synthesis does not see the Tcl variable used by constraints.xdc's create_clock: substitute the literal

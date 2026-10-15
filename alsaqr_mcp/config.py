@@ -47,6 +47,8 @@ class Config:
         self.fpga_env = dict(fp.get("env", {}))                 # BOARD, XILINX_PART, MAIN_MEM, NUM_CORES, ... of setup.sh
         self.fpga_path_prepend = os.path.expanduser(fp.get("path_prepend", ""))     # wrappers the IP Makefiles expect (vivado-2018.2, vitis-2020.2)
         self.fpga_soc_mhz = float(fp.get("soc_mhz", 50))
+        # `make <bender_make>` in hardware/ rewrites fpga/alsaqr/tcl/generated/compile.tcl from Bender.yml before a build
+        self.fpga_bender_make = fp.get("bender_make", "simple-padframe=1 exclude-cluster=1 exclude-rot=1 quad-core=1 scripts-bender-fpga-ddr")
         self.fpga_directives = {"opt": "Default", "place": "AltSpreadLogic_high", "route": "Default", **fp.get("directives", {})}
         bd = data.get("board", {})
         self.board_bundle = Path(os.path.expanduser(bd["bundle"])) if bd.get("bundle") else self.toolchain_bundle
