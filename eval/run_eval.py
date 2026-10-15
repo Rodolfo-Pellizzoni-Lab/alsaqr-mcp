@@ -109,6 +109,13 @@ def repo_state() -> dict:
                                    text=True).stdout for r in WATCHED_REPOS if (r / ".git").exists()}
 
 
+def board_cleanup():
+    """Stop OpenOCD, GDB and console readers (any condition may leave them running; the agents may not pkill)."""
+    for pat in ("[o]penocd", "riscv64-unknown-elf-[g]db", "uart_ca[p].py", "/dev/ttyUSB3"):
+        subprocess.run(["pkill", "-9", "-f", pat], capture_output=True)
+    time.sleep(2)
+
+
 def run_one(task, cond, rep, a, results: Path) -> dict:
     name = f"{task}_{cond}_{rep}"
     meta_p = results / f"{name}.meta.json"
@@ -125,6 +132,8 @@ def run_one(task, cond, rep, a, results: Path) -> dict:
     sandbox.make(sb, DATA / "templates" / tmpl if tmpl else None)
     install_fixtures(sb, task)
     mcp_cfg = str(sb / "mcp_servers.json") if cond == "mcp" else '{"mcpServers":{}}'
+    if TASKS[task].get("serial"):
+        board_cleanup()   # board tasks: no debugger / console reader left by a previous run may hold the adapter
     cmd = [CLAUDE, "-p", prompt(task, cond, str(sb)), "--model", a.model, "--effort", a.effort,
            "--output-format", "stream-json", "--verbose",
            "--permission-mode", "auto", "--permission-prompts", "none",
@@ -142,6 +151,8 @@ def run_one(task, cond, rep, a, results: Path) -> dict:
     # stop anything the run left behind (simulations, sessions) before recording and removing the sandbox
     subprocess.run(["pkill", "-9", "-f", f"CVA6_STRING={sb}/"], capture_output=True)
     subprocess.run(["pkill", "-9", "-f", f"{sb}/he-soc/hardware/xsim/work"], capture_output=True)
+    if TASKS[task].get("serial"):
+        board_cleanup()
     record_changes(sb, results / f"{name}.diff")
     meta = {"run": name, "task": task, "cond": cond, "rep": rep, "rc": rc, "wall_s": wall, "sandbox": str(sb),
             "model": a.model, "effort": a.effort, "template": tmpl}

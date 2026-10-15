@@ -95,6 +95,26 @@ Before the round-2 changes (round 1, 5 tasks), build+run cost the MCP 25% *more*
 bug repeated `soc_bootflow`'s wrong "context 2*hart+1 = machine mode". The blocking `sim_status` wait and the
 corrected PLIC text turned both around (build+run -33%, quad_sync 1.07M -> 412k tokens and full marks).
 
+## Results (2026-10-15, FPGA and board tasks, Sonnet 5.5, effort high, 1 run per task and condition)
+
+The board tasks need the VCU118 and run one at a time (tag `fpga1b`); the FPGA task reads a finished 50 MHz build
+(`patched_mcp`, tags `fpga1c` and `fpga1d`). Both conditions get the same facts (bitstream path, console device,
+the alsaqr-software bundle); the baseline writes its own OpenOCD / GDB / console scripts.
+
+| Task | Tokens MCP / base | Saved | Cost MCP / base | Wall s MCP / base | Score MCP / base |
+|---|---|---|---|---|---|
+| F1_fpga_gate (fpga1c, before) | 224k / 224k | 0% | $0.16 / $0.19 | 221 / 222 | 4.00 / 4.00 of 4 |
+| F1_fpga_gate (fpga1d, after) | 116k / 248k | 53% | $0.11 / $0.22 | 26 / 249 | 4.00 / 4.00 of 4 |
+| B1_board_test | 276k / 1,919k | 86% | $0.14 / $0.67 | 148 / 455 | 3.00 / 3.00 of 3 |
+| B2_linux_qos | 91k / 1,280k | 93% | $0.07 / $0.45 | 377 / 709 | 4.00 / 4.00 of 4 |
+
+F1 before and after: in `fpga1c` the MCP agent called `fpga_status`, then read the reports anyway and reopened the
+routed checkpoint in Vivado (3.5 minutes, 19 GB) to check the MMCM's attributes and the hold endpoints, because the
+result did not say where its clock number came from. `fpga1d` runs against the current tool: the gate computes
+`soc_clk_mhz` from the MMCM cell's own attributes, counts the accepted adv_timer hold endpoints, and the result names
+the source of every number; the agent stopped at the tool result. A result an agent will not re-verify has to carry
+its provenance.
+
 ## Running
 
 ```

@@ -1,3 +1,4 @@
+import os
 """Benchmark tasks: what an agent is asked, what its sandbox contains, and how its answer is graded.
 
 Every task runs twice per repetition: with the alsaqr MCP server attached ("mcp") and without ("base"). Both get
@@ -21,6 +22,12 @@ APMU_LINE = ("- apmu-software (tests for the APMU, whose firmware runs on an Ibe
              "{SB}/apmu-software. Its tests are built with the toolchains of the alsaqr-software bundle at "
              "/home/mhassen/alsaqr-software (read only: `source.sh` there puts its rv64 GCC, its rv32 GCC and the "
              "riscv-none-elf-* shim the firmware Makefiles call on PATH).\n")
+
+BOARD_LINE = ("- A Xilinx VCU118 board running the AlSaqr SoC is connected to this machine (Vivado hw_server programs it; "
+              "the alsaqr-software bundle at /home/mhassen/alsaqr-software, read only, holds the OpenOCD + GDB + "
+              "toolchain the board is debugged with, a RUNBOOK.md that describes bare-metal and Linux procedures, and the "
+              "prebuilt Linux under linux/prebuilt). The board's console is /dev/ttyUSB3 at 38400 baud. The board is "
+              "programmed with the bitstream {BIT}.\n")
 
 # fixtures: (kind, source, destination in the sandbox)
 #   "file"/"dir": copy from eval/fixtures (or an absolute path); "quad_support": the support files quad_boot.c uses;
@@ -237,10 +244,54 @@ evidence for it, the change you made, and the final result line.""",
             (0.5, "verified: '=== EVU TEST PASS (0 failures) ===' and [JTAG] SUCCESS (~6.4 ms)"),
         ],
     },
+    # ------------------------------------------------------------------ FPGA build results and the VCU118 board
+    "F1_fpga_gate": {
+        "kind": "fpga result", "timeout_s": 1800, "tools": ["fpga_status"],
+        "prompt": """Task: a VCU118 bitstream build of this tree finished earlier; its Vivado logs, timing reports and \
+state are in /home/mhassen/he-soc/hardware/xsim/work/mcp/fpga/patched_mcp (build id patched_mcp). Report, with the \
+numbers: the SoC clock frequency the MMCM really generates for the design, the number of failing setup endpoints, the \
+number of failing hold endpoints that are NOT the known adv_timer clock-as-data endpoints (r_ls_clk_sync_reg), whether \
+every net is routed, and whether the bitstream is acceptable for the board.""",
+        "rubric": [
+            (1, "SoC clock 50.000 MHz (clk_out1_xilinx_clk_mngr / ALSAQR_CLK, 20 ns period)"),
+            (1, "0 failing setup endpoints (WNS 0.000)"),
+            (1, "0 hold failures outside the adv_timer clock-as-data class (the only failing hold endpoints are "
+                "apb_adv_timer u_in_stage/r_ls_clk_sync_reg)"),
+            (1, "all nets routed and the verdict: acceptable / OK, bitstream path given"),
+        ],
+    },
+    "B1_board_test": {
+        "kind": "board run", "timeout_s": 2400, "tools": ["board_run"], "serial": True,
+        "extra_env": "{BOARD_LINE}",
+        "prompt": """Task: run the self-checking bare-metal test t_cbqri (he-soc software/soc_tests/t_cbqri, built for \
+the board: its code and data must live in the DDR at 0x80000000) on the connected VCU118 and report the test's \
+result line as printed on the console and the value of its tohost word after the run.""",
+        "rubric": [
+            (1, "the test was built for the board layout (make build fpga=1 / DDR at 0x80000000) and really run on the board"),
+            (1, "result line: TEST PASS 54 checks"),
+            (1, "tohost = 0x1"),
+        ],
+    },
+    "B2_linux_qos": {
+        "kind": "board linux", "timeout_s": 3000, "tools": ["linux_boot", "linux_status", "linux_cmd"], "serial": True,
+        "extra_env": "{BOARD_LINE}",
+        "prompt": """Task: boot the prebuilt Linux of the alsaqr-software bundle on the connected VCU118 so that hart 0 \
+runs with its srmcfg CSR (number 0x181) set to 0x30005 from the moment it starts executing, then, from the Linux \
+shell, read the 32-bit word at physical address 0x103F0000 and report its value. Explain in one sentence what the \
+value encodes.""",
+        "rubric": [
+            (1, "Linux reached a shell on the board (OpenSBI banner, kernel, busybox prompt)"),
+            (1, "srmcfg of hart 0 was written to 0x30005 before release (e.g. through GDB before continuing) and verified"),
+            (1, "the value read is 0xD4 (0x000000d4)"),
+            (1, "explanation: the accelerator socket's QoS probe returns the AXI user field of the hart's read: "
+                "source port 0, RCID 5 in bits 5:2, MCID 3 in bits 9:6 (AT 0)"),
+        ],
+    },
 }
 
 def prompt(task: str, cond: str, sb: str) -> str:
     t = TASKS[task]
-    env = (ENV.replace("{MCP_LINE}", MCP_LINE if cond == "mcp" else "").replace("{EXTRA}", t.get("extra_env", ""))
+    extra = t.get("extra_env", "").replace("{BOARD_LINE}", BOARD_LINE.replace("{BIT}", os.environ.get("EVAL_BOARD_BIT", "<unknown>")))
+    env = (ENV.replace("{MCP_LINE}", MCP_LINE if cond == "mcp" else "").replace("{EXTRA}", extra)
            .replace("{SIM_LIMIT}", str(t.get("sim_limit_min", 15))))
     return (t["prompt"] + "\n\n" + env).replace("{SB}", sb)
