@@ -29,7 +29,8 @@ def _bundle_of(d: Path) -> Path | None:
     return None
 
 
-def sw_build(test: str, extra_cflags: str | None = None, clean: bool = False, target: str = "build") -> dict:
+def sw_build(test: str, extra_cflags: str | None = None, clean: bool = False, target: str = "build",
+             make_args: list[str] | None = None, suffix: str = "") -> dict:
     cfg = load()
     d = Path(os.path.expanduser(test))
     if not d.is_dir():
@@ -62,7 +63,7 @@ def sw_build(test: str, extra_cflags: str | None = None, clean: bool = False, ta
     cmds = []
     if clean:
         cmds.append(["make", "clean"])
-    cmds.append(["make", target, f"RISCV_GCC={gcc}"])
+    cmds.append(["make", target, f"RISCV_GCC={gcc}"] + list(make_args or []))   # e.g. fpga=1 for the board layout
     log_lines = []
     for c in cmds:
         r = subprocess.run(c, cwd=str(d), capture_output=True, text=True, env=env, timeout=900)
@@ -83,7 +84,7 @@ def sw_build(test: str, extra_cflags: str | None = None, clean: bool = False, ta
         found = sorted(p.name for p in d.glob("*.riscv"))
         return _err("no ELF produced", f"expected {' or '.join(str(c) for c in candidates)}"
                     + (f"; ELFs in {d}: {', '.join(found)}" if found else ""))
-    dst = cfg.binaries / (f"{name}.riscv" if elf.stem == name else f"{name}_{elf.stem}.riscv")
+    dst = cfg.binaries / ((f"{name}" if elf.stem == name else f"{name}_{elf.stem}") + suffix + ".riscv")
     shutil.copyfile(elf, dst)
     try:
         info = elf_info(cfg, dst)
@@ -346,7 +347,15 @@ def soc_bootflow() -> dict:
                            "claim/complete at 0x0C20_0004 + 0x1000*context",
                    "UART": "0x4000_0000 (the mock UART the console lines come from)",
                    "accelerator socket": "0x1000_0000 (the cluster window; the cluster is excluded): slot s at "
-                                         "+s*0x1_0000, interrupt PLIC ID 9; empty slots answer DECERR with data 0xdeadbeef (CVA6 takes no fault). accel_list / accel_add"},
+                                         "+s*0x1_0000, interrupt PLIC ID 9; empty slots answer DECERR with data 0xdeadbeef (CVA6 takes no fault). accel_list / accel_add",
+                   "QoS IDs (Ssqosid)": "CSR srmcfg 0x181 (RCID bits 3:0, MCID bits 19:16 implemented); every core request carries "
+                                        "{AT, MCID, RCID, source core} in the AXI user field; probe 0x103F_0000 returns the user "
+                                        "field of the read itself; sim_status(qos=true) lists the tags seen at the LLC. "
+                                        "he-soc hardware/docs/qos.md",
+                   "LLC CBQRI capacity controller": "0x1040_1800: cc_capabilities +0x00, cc_alloc_ctl +0x18 (OP 1 CONFIG_LIMIT, "
+                                                    "2 READ_LIMIT; RCID [19:8], AT [7:5]; STATUS at +0x1C), cc_block_mask "
+                                                    "+0x20 (16 ways). A request allocates only into the ways of its (RCID, AT) "
+                                                    "mask. LLC read-miss counter: 0x1A10_6008 (enable 0x1A10_6004 = 1)"},
         "test_helpers": "software/soc_tests/include/soc_test.h: CHECK(), trap guard (any exception -> 'TRAP ...' line, "
                         "exit 127 instead of hanging), soc_wake_all() for cores 2-3, soc_barrier(); sim_regress runs the "
                         "SoC validation suite",
