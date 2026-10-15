@@ -60,12 +60,18 @@ the old version until they are recompiled.
 
 ### sim_status
 ```
-in:  { run_id, since_ns?: int, wait_s?: int (0, max 900), until?: str, until_ns?: int }
+in:  { run_id, since_ns?: int, wait_s?: int (0, max 900), until?: str, until_ns?: int, qos?: bool }
 out: { run_id, state, elab, snapshot, binary, sim_time_ns, wall_s, rss_mb, sim_ns_per_wall_min,
        markers: [{t_ns, approx, kind: success|fail|fatal|finish|jtag|preload|error, text}], markers_truncated,
        uart_lines, console?: [{n, t_ns, text}], console_note?, uart_hint?, wait?: {waited_s, stopped_because},
-       stall?: {at_ns, memory_growing, meaning, next}, exit?: {rc, verdict, program_exit_code, note, reason?}, elab_errors?, note? }
+       stall?: {at_ns, memory_growing, meaning, next}, exit?: {rc, verdict, program_exit_code, note, reason?}, elab_errors?, note?,
+       qos?: ["llc_in src=1 at=0 rcid=6 mcid=11 ar=1033 aw=13", ...], qos_errors?: [str] }
 ```
+`qos=true` adds the simulation's QoS monitor counts (he-soc `hardware/docs/qos.md`): AXI requests per QoS tag
+(source core, access type, RCID, MCID) entering the LLC (`llc_in`) and leaving it towards memory (`llc_out`),
+the LLC's CBQRI allocations per RCID (`llc_alloc rcid=.. at=.. n=.. ways=.. mask=..`) and the checkers' summaries.
+`qos_errors` is always present when the simulation's QoS scoreboard or the LLC allocation check reported an error
+(a request with a wrong tag, a refill outside its CBQRI way mask); `sim_regress` then counts the test as failed.
 Markers are the testbench's own progress lines (JTAG steps, program load, SUCCESS/FAILED, `$finish`);
 `approx: true` means the time is that of the last heartbeat before the line (10 µs resolution).
 `wait_s` blocks until the run ends, or until `until` (case-sensitive) appears in a marker or console line, or until simulated time
@@ -163,6 +169,8 @@ out: { regress_id, passed, failed, running, wall_s, recompiled?, note?, next?,
 | t_smp | 4 cores woken (mailbox + APMU), contended amoadd and LR/SC counters, per-core cache lines read by core 0, a message-passing ring between cores |
 | t_irq | CLINT machine software interrupt (msip), CLINT timer interrupt (mtimecmp), PLIC priority/threshold registers |
 | t_socket | accelerator socket: accesses past the last slot return DECERR / 0xdeadbeef (both lanes, 32- and 64-bit) instead of hanging |
+| t_qos | Ssqosid `srmcfg` CSR: reset value, WARL widths, access from M/S (ok), U (illegal), VS/VU (virtual instruction); each core's QoS tag read back through the socket's QoS probe (uncached read and write, tag changes); cached traffic with sharing, AMOs, LR/SC and LLC evictions, checked request by request by the simulation's QoS scoreboard |
+| t_cbqri | LLC CBQRI capacity controller (0x1040_1800): register interface and STATUS codes; isolation (victim lines of RCID 1 survive 80 aggressor accesses of RCID 2 with disjoint way masks: 0 LLC read misses vs 8 with shared masks); code/data masks; 4 cores with disjoint 4-way masks in one LLC set |
 
 `accel` = the C test of every registered accelerator. Self-checking programs use `software/soc_tests/include/soc_test.h`
 (`CHECK`, a trap guard that turns any exception into a `TRAP mcause=.. mepc=.. mtval=..` line and exit code 127,
@@ -212,6 +220,59 @@ waits for the verdict (re-elaboration ~4 min after an RTL change, then ~2-3 min)
 
 ### accel_list / accel_remove
 `accel_list {}` -> slots, bases, RTL files, free slots. `accel_remove {name}` frees the slot (files are kept).
+
+## FPGA bitstreams and the VCU118 board
+
+The same working tree can be built into a VCU118 bitstream and run on the connected board; the tools fold in the
+bring-up lessons of that flow (hardware/docs and the memory notes of 2026-10): a timing gate that rejects what the
+board would silently mis-execute, the reset / stale-IP / congestion traps, the debugger quirks of this board.
+
+### fpga_build / fpga_status
+```
+in:  { tag?, opt?, place?, route? (Vivado directives), reuse_synth?: build_id | "last" }
+out: { build_id, phase, directives, expect, next }
+in:  { build_id?, wait_s? (max 900) }
+out: { build_id, phase, elapsed_s, wns_place?, timing: {setup_failing, hold_failing_outside_adv_timer, hold_failing_adv_timer,
+       wns, whs, unrouted, soc_clk_mhz (from the MMCM's attributes), clk_constraint_mhz}, hold_failing_endpoints?,
+       sources (where each number comes from), verdict: OK | FAIL, bitstream, errors?, logs }   (no build_id: the last builds)
+```
+A build is a detached `scripts/fpga_build.sh`: the in-tree `run.tcl` project setup and synthesis (`make constr`, the
+SoC clock period substituted into `timing_constr.xdc`, ~40 min), one linked checkpoint with the IP contents and
+constraints, then `scripts/fpga_impl.tcl` (opt / place / route / gate / bitstream, ~2-3 h, 50 MHz, 4 cores, DDR4, LLC).
+State in `<state>/fpga/<build_id>/build.json`, Vivado logs and reports next to it. The gate: 0 failing setup endpoints,
+no hold failures outside the adv_timer clock-as-data class, every net routed, MMCM output = the SoC clock. Post-route
+`phys_opt_design` is always followed by a re-route (alone it leaves real hold violations). Default directives are the
+ones that closed timing on this design; `SSI_SpreadLogic_high` + `AlternateCLBRouting` is the congestion fallback.
+
+### board_program / board_run / board_regress
+```
+in:  { bitstream: .bit path | build_id }                      -> { programmed, bitstream, seconds, ddr_wait_s }
+in:  { binary: test name | ELF built with fpga=1, program?, sleep_ms? (8000), peeks?: ["addr:count"], tag? }
+out: { run_id, result: pass | fail | no_result | error, tohost, test_line, console_tail, failed_checks?, peeks?, logs }
+in:  { suite?: soc | accel | all, tests?, program?, sleep_ms? }  -> { bitstream, passed, failed, wall_s, tests: [...] }
+```
+`board_program` goes through Vivado's hw_server and waits for the DDR4 calibration; it stops any debugger / console
+session. `board_run` builds a soc_tests or accel test for the board layout (`make build fpga=1`, ELF copied as
+`<name>_fpga.riscv`) and drives it over JTAG with the alsaqr-software OpenOCD + GDB (`scripts/board_run.sh`): OpenOCD
+manages harts 0-1 (harts 2-3 of this board never halt once running, they are released through debug-module writes),
+`.bss` is zeroed from GDB (the startup code does not), the console (38400) is captured, and after `sleep_ms` the
+program is halted and `tohost` read over the system bus. Results are the self-check line and `tohost`; the raw
+console and GDB logs stay under `<state>/board/runs/<run_id>/`. Every run starts a fresh OpenOCD and ends with `reset halt`; when the harts cannot be halted (a program left them hung, which also happens after a Linux session) the board is reprogrammed with the current bitstream and the run retried once (`note` says so).
+
+### linux_boot / linux_status / linux_cmd / board_stop
+```
+in:  { bitstream?, program? (true), srmcfg?: {hart: value}, payload?, dtb?, wait_s? }   -> { boot_id, phase, next }
+in:  { boot_id?, wait_s? }  -> { phase: openocd | loading | released | opensbi | kernel | shell | failed, milestones,
+                                 srmcfg_written, kernel, console_tail, logs }
+in:  { cmd, timeout_s? }    -> { cmd, output: [lines] }
+```
+`linux_boot` reprograms the board (a Linux boot must start clean), loads the DTB and the prebuilt OpenSBI + Linux
+payload over JTAG (~3 min at ~110 KB/s), optionally writes `srmcfg` (CSR 0x181, exposed to GDB as `$csr385`) on the
+given harts before releasing them, and records the console milestones. Harts 2-3 of this board cannot be halted once
+running, so the CSR is written before release rather than at run time. `linux_cmd` types a command one character at
+a time (the SoC UART overruns on bursts) and returns what the console captured up to the next prompt; busybox has
+`devmem` and `hexdump` (`-s`/`-n` in decimal), `/dev/mem` reads of the OpenSBI region are PMP-protected. Only one
+process may read the console: the tools kill a previous capture before starting their own.
 
 ## Software and navigation tools
 

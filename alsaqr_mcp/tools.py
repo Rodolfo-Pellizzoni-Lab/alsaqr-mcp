@@ -5,8 +5,9 @@ RTL edits:  rtl_changes, rtl_recompile
 Software and navigation: sw_build, soc_lookup, soc_bootflow
 Validation: sim_regress
 Accelerators: accel_add, accel_list, accel_unit_test, accel_soc_test, accel_remove
+FPGA / board: fpga_build, fpga_status, board_program, board_run, board_regress, linux_boot, linux_status, linux_cmd, board_stop
 """
-from . import accel, regress, rtl, session, sim, soc, stall, status
+from . import accel, board, fpga, regress, rtl, session, sim, soc, stall, status
 
 
 class UnknownTool(Exception):
@@ -47,16 +48,19 @@ TOOLS = {
             "Waiting: wait_s (max 900) blocks until the run ends, or until the text `until` appears in a marker or console "
             "line, or until simulated time reaches until_ns (e.g. well past the time SUCCESS is expected, to tell a hung "
             "program from a slow one); `wait` says why it returned. After a wait, or once the run has ended, the result "
-            "includes the last console lines, so a separate sim_uart call is rarely needed."
+            "includes the last console lines, so a separate sim_uart call is rarely needed. qos=true adds the QoS "
+            "monitor's end-of-run counts: AXI requests per QoS tag entering the LLC (llc_in) and leaving it (llc_out), "
+            "one line per (src core, at, rcid, mcid) with ar/aw counts (see he-soc hardware/docs/qos.md)."
         ),
         "schema": {"type": "object", "properties": {
             "run_id": _S, "since_ns": {**_I, "description": "only markers with t_ns > since_ns"},
             "wait_s": {**_I, "description": "block up to this many seconds (max 900) for the run to end or a condition below"},
             "until": {**_S, "description": "with wait_s: also return as soon as this text (case-sensitive) appears in a marker or console line"},
-            "until_ns": {**_I, "description": "with wait_s: also return once simulated time reaches this many ns"}},
+            "until_ns": {**_I, "description": "with wait_s: also return once simulated time reaches this many ns"},
+            "qos": {"type": "boolean", "description": "include the QoS monitor lines (finished runs)"}},
             "required": ["run_id"]},
         "fn": lambda a: status.sim_status(a["run_id"], a.get("since_ns"), a.get("wait_s", 0), a.get("until"),
-                                          a.get("until_ns")),
+                                          a.get("until_ns"), bool(a.get("qos", False))),
     },
     "sim_uart": {
         "description": (
@@ -265,6 +269,128 @@ TOOLS = {
         "description": "Unregister an accelerator (frees its slot; its files are kept).",
         "schema": {"type": "object", "properties": {"name": _S}, "required": ["name"]},
         "fn": lambda a: accel.accel_remove(a["name"]),
+    },
+    # ------------------------------------------------------------------ FPGA bitstreams and the VCU118 board
+    "fpga_build": {
+        "description": (
+            "Build a VCU118 bitstream of the he-soc working tree (4 cores, DDR4, LLC, 50 MHz SoC clock) in the background and "
+            "return a build_id: the in-tree project setup + synthesis (~40 min), then opt / place / route / a timing gate / "
+            "write_bitstream in non-project mode (~2-3 h). The gate accepts only: 0 failing setup endpoints, no hold failures "
+            "other than the known adv_timer clock-as-data endpoints, every net routed, and the MMCM really generating the "
+            "SoC clock (a stale IP output once gave 20 MHz under a 50 MHz constraint). Defaults are the directives that "
+            "closed timing on this design (AltSpreadLogic_high placement); SSI_SpreadLogic_high + AlternateCLBRouting "
+            "is the fallback when the router reports congestion. reuse_synth=<build_id or 'last'> skips synthesis and "
+            "re-implements that build's netlist (RTL edits need a full build). Wait with fpga_status(build_id, wait_s=900)."
+        ),
+        "schema": {"type": "object", "properties": {
+            "tag": {**_S, "description": "optional build name (becomes the build_id)"},
+            "opt": {**_S, "description": "opt_design directive (default Default)"},
+            "place": {**_S, "description": "place_design directive (default AltSpreadLogic_high)"},
+            "route": {**_S, "description": "route_design directive (default Default)"},
+            "reuse_synth": {**_S, "description": "build_id (or 'last') whose synthesized checkpoint to implement again"}}},
+        "fn": lambda a: fpga.fpga_build(a.get("tag"), a.get("opt"), a.get("place"), a.get("route"), a.get("reuse_synth")),
+    },
+    "fpga_status": {
+        "description": (
+            "Progress and result of an fpga_build: phase (constr, synth, link, opt, place, route, route_physopt, gate, "
+            "bitstream, done, failed), elapsed time, post-place WNS, the gate's numbers (setup_failing, "
+            "hold_failing_outside_adv_timer with every such endpoint, hold_failing_adv_timer, wns, whs, unrouted, "
+            "soc_clk_mhz computed from the MMCM's own attributes in the routed design, clk_constraint_mhz) with the "
+            "source of each number, the verdict (OK / FAIL) and the bitstream path. The numbers are the final ones "
+            "from the routed checkpoint: there is nothing more to learn by opening it or the reports again (they stay "
+            "in the build directory). wait_s (max 900) blocks until the build ends. Without build_id: the last builds."
+        ),
+        "schema": {"type": "object", "properties": {
+            "build_id": _S, "wait_s": {**_I, "description": "block up to this many seconds (max 900)"}}},
+        "fn": lambda a: fpga.fpga_status(a.get("build_id"), a.get("wait_s", 0)),
+    },
+    "board_program": {
+        "description": (
+            "Program the connected VCU118 with a bitstream (.bit path, or the build_id of a finished fpga_build with verdict "
+            "OK) through Vivado's hw_server (~45 s) and wait for DDR4 calibration (~30 s). Stops any OpenOCD / console "
+            "session first. board_run, board_regress and linux_boot need a programmed board; a Linux boot must start "
+            "from a freshly programmed one (bare-metal tests leave dirty cache lines)."
+        ),
+        "schema": {"type": "object", "properties": {"bitstream": _S}, "required": ["bitstream"]},
+        "fn": lambda a: board.board_program(a["bitstream"]),
+    },
+    "board_run": {
+        "description": (
+            "Run one bare-metal program on the programmed board and return its result (blocking, ~20-40 s): a soc_tests / "
+            "accel test name is built for the board layout (make build fpga=1: code and data in DDR) or pass an ELF path "
+            "built that way. Over JTAG (alsaqr-software OpenOCD + GDB, harts 0-1 managed, harts 2-3 released through the "
+            "debug module, .bss zeroed) the program runs for sleep_ms, then tohost and the console are read: result is "
+            "pass (TEST PASS / SUCCESS line), fail (TEST FAIL / TRAP), no_result (no self-check line: still running or "
+            "silent) or error; failed_checks lists the CHECK FAIL lines. peeks=['0x1c000100:4'] reads 64-bit words over "
+            "the system bus after the halt. program=<bitstream or build_id> programs first; without it the program runs on "
+            "whatever the FPGA holds (a board nobody programmed through these tools works too)."
+        ),
+        "schema": {"type": "object", "properties": {
+            "binary": {**_S, "description": "test name (software/soc_tests or accel) or an ELF built with fpga=1"},
+            "program": {**_S, "description": "bitstream path or build_id to program first"},
+            "sleep_ms": {**_I, "description": "run time before the halt (default 8000)"},
+            "peeks": {**_LS, "description": "addr:count 64-bit words to read after the run"},
+            "tag": {**_S, "description": "optional run name"}}, "required": ["binary"]},
+        "fn": lambda a: board.board_run(a["binary"], a.get("program"), a.get("sleep_ms"), a.get("peeks"), a.get("tag")),
+    },
+    "board_regress": {
+        "description": (
+            "Run a suite of self-checking programs on the programmed board, one after the other (blocking, ~30 s each): "
+            "suite soc (t_mem, t_atomics, t_smp, t_irq, t_socket, t_qos, t_cbqri), accel (example, crc32), all; or "
+            "tests=[...]. program=<bitstream or build_id> programs first. One compact table: result, tohost, test line, "
+            "failed checks."
+        ),
+        "schema": {"type": "object", "properties": {
+            "suite": {**_S, "description": "soc | accel | all (default soc)"}, "tests": _LS,
+            "program": {**_S, "description": "bitstream path or build_id to program first"},
+            "sleep_ms": {**_I, "description": "run time per test (default 8000)"}}},
+        "fn": lambda a: board.board_regress(a.get("suite"), a.get("tests"), a.get("program"), a.get("sleep_ms")),
+    },
+    "linux_boot": {
+        "description": (
+            "Boot the prebuilt Linux (alsaqr-software: OpenSBI fw_payload + DTB, 1 CPU, console 38400) on the board in "
+            "the background: programs the bitstream first unless program=false (current one, or bitstream=<.bit / "
+            "build_id>), loads the DTB and the 15 MB payload over JTAG (~3 min), optionally writes QoS tags into srmcfg "
+            "(CSR 0x181) of given harts before releasing them (srmcfg={'0': '0x30005'} = RCID 5, MCID 3 on hart 0; "
+            "nothing else touches that CSR, so every access of that hart carries the tag), then watches the console. "
+            "Returns a boot_id; linux_status(boot_id, wait_s=600) reports opensbi / kernel / shell milestones. "
+            "Then linux_cmd runs shell commands (busybox: devmem, hexdump of /dev/mem, cat, ...)."
+        ),
+        "schema": {"type": "object", "properties": {
+            "bitstream": {**_S, "description": "bitstream path or build_id (default: the programmed one)"},
+            "program": {**_B, "description": "program the board first (default true)"},
+            "srmcfg": {"type": "object", "description": "{hart: value} QoS tags written before release"},
+            "payload": {**_S, "description": "fw_payload.elf (default: the bundle's prebuilt)"},
+            "dtb": {**_S, "description": "device tree blob (default: the bundle's prebuilt)"},
+            "wait_s": {**_I, "description": "block up to this many seconds (max 900) for the shell"}}},
+        "fn": lambda a: board.linux_boot(a.get("bitstream"), a.get("program", True), a.get("srmcfg"), a.get("payload"),
+                                         a.get("dtb"), a.get("wait_s", 0)),
+    },
+    "linux_status": {
+        "description": (
+            "State of a linux_boot: phase (openocd, loading, released, opensbi, kernel, shell, failed), seconds to each "
+            "milestone, the srmcfg values GDB wrote, the kernel version line, the last console lines; wait_s (max 900) "
+            "blocks until the shell is up or the boot fails. Without boot_id: the current session."
+        ),
+        "schema": {"type": "object", "properties": {"boot_id": _S, "wait_s": {**_I, "description": "block up to this many seconds (max 900)"}}},
+        "fn": lambda a: board.linux_status(a.get("boot_id"), a.get("wait_s", 0)),
+    },
+    "linux_cmd": {
+        "description": (
+            "Run a shell command on the booted Linux through the board console (typed one character at a time: the SoC "
+            "UART overruns on bursts) and return its output lines (up to 200). Blocking up to timeout_s. Examples: "
+            "devmem 0x103F0000 32 (the accelerator socket's QoS probe: the user field of this hart's last read, "
+            "port | rcid<<2 | mcid<<6 | at<<10), devmem 0x10401800 32 (LLC CBQRI capacity controller capabilities), "
+            "hexdump -s <phys> -n <bytes> /dev/mem > /dev/null (a cacheable read workload; the OpenSBI region is "
+            "PMP-protected)."
+        ),
+        "schema": {"type": "object", "properties": {"cmd": _S, "timeout_s": {**_I, "description": "default 30"}}, "required": ["cmd"]},
+        "fn": lambda a: board.linux_cmd(a["cmd"], a.get("timeout_s", 30)),
+    },
+    "board_stop": {
+        "description": "Stop OpenOCD and the console capture (the FPGA keeps running whatever it runs).",
+        "schema": {"type": "object", "properties": {}},
+        "fn": lambda a: board.board_stop(),
     },
 }
 
