@@ -2,7 +2,7 @@
 
 Suites:
   soc    SoC validation (he-soc software/soc_tests: memory paths, atomics, 4-core coherence, interrupts,
-         accelerator socket) plus hello_culsans and quad_boot
+         accelerator socket, QoS IDs) plus hello_culsans and quad_boot
   accel  the C test of every registered accelerator (software/accel/<name>)
   all    both
 A test is a directory with a Makefile (name under he-soc software/, or a path). Self-checking tests print
@@ -18,8 +18,8 @@ from . import accel, sim, soc, status
 from .config import load
 
 SOC_SUITE = ["soc_tests/t_mem", "soc_tests/t_atomics", "soc_tests/t_smp", "soc_tests/t_irq", "soc_tests/t_socket",
-             "hello_culsans", "quad_boot"]
-MAX_PARALLEL = 10
+             "soc_tests/t_qos", "soc_tests/t_cbqri", "hello_culsans", "quad_boot"]
+MAX_PARALLEL = 12
 _KEEP = re.compile(r"^(TEST |CHECK FAIL|TRAP)")
 
 
@@ -45,14 +45,17 @@ def _row(test: str, run_id: str | None, st: dict | None, build_err: dict | None 
     row = {"test": name, "run_id": run_id, "state": state}
     if state in ("finished", "stalled", "timeout", "killed", "elab_failed"):
         code = ex.get("program_exit_code")
-        ok = ex.get("verdict") == "success" and (code in (0, None))
+        ok = ex.get("verdict") == "success" and (code in (0, None)) and not st.get("qos_errors")
         row["result"] = "pass" if ok else "fail"
         if code is not None:
             row["exit_code"] = code
         row["sim_ms"] = round((st.get("sim_time_ns") or 0) / 1e6, 2)
         lines = [c["text"] for c in con if _KEEP.match(c.get("text", ""))]
         if not ok:
-            row["detail"] = (lines or [c["text"] for c in con[-5:]])[:8]
+            row["detail"] = (lines or [c["text"] for c in con[-5:]]
+                             or [m["text"] for m in st.get("markers", []) if m["kind"] in ("fatal", "fail", "error")][-3:])[:8]
+            if st.get("qos_errors"):
+                row["detail"] = row["detail"] + ["[QOS] " + l for l in st["qos_errors"][:4]]
             if st.get("stall"):
                 row["stall"] = st["stall"].get("meaning")
             if st.get("elab_errors"):
@@ -84,7 +87,7 @@ def sim_regress(suite: str | None = None, tests: list[str] | None = None, regres
         if not tests:
             return _err("empty suite", "no tests (no accelerators registered?)")
         if len(tests) > MAX_PARALLEL:
-            return _err("too many tests", f"at most {MAX_PARALLEL} in parallel (each simulation needs ~2 GB)")
+            return _err("too many tests", f"at most {MAX_PARALLEL} in parallel (each simulation needs ~2.7 GB)")
         fp = cfg.flow_problem()
         if fp:
             return fp

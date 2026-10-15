@@ -11,12 +11,13 @@ from pathlib import Path
 from .config import Config, load
 
 _TICK_RE = re.compile(r"^TICK (\d+)")
-_XSIM_T_RE = re.compile(r"t=(\d+)")
+_XSIM_T_RE = re.compile(r"\bt=(\d+)")
+_QOS_RE = re.compile(r"^\[QOS\] ")
 _UART_RE = re.compile(r"^(?:(\d\d:\d\d:\d\d|--:--:--) )?Mock uart\s+(\d+)(?: t=(\d+))?:\s?(.*)$")
 _MARKERS = (
     ("success", re.compile(r"\[JTAG\] SUCCESS")),
     ("fail", re.compile(r"\[JTAG\] FAILED|FAILED: return code")),
-    ("fatal", re.compile(r"Fatal|\$fatal|Simulation engine not responding|terminated in an unexpected")),
+    ("fatal", re.compile(r"Fatal|FATAL_ERROR|\$fatal|Simulation engine not responding|terminated in an unexpected")),
     ("finish", re.compile(r"\$finish called")),
     ("jtag", re.compile(r"^\[JTAG\]")),
     ("preload", re.compile(r"^\[XSIM-L[23]\]")),
@@ -50,8 +51,9 @@ def _parse_time(s: str) -> str | None:
         return None
 
 
-def _scan_stdout(path: Path, since_ns: int | None):
-    """Walk the xsim stdout once: last TICK (ps), markers with approximate sim time, uart line count."""
+def _scan_stdout(path: Path, since_ns: int | None, qos: list | None = None):
+    """Walk the xsim stdout once: last TICK (ps), markers with approximate sim time, uart line count.
+    The QoS monitor's end-of-run lines go to `qos` (if given), not to the markers."""
     last_tick_ps = None
     markers, uart_lines = [], 0
     if not path.exists():
@@ -65,6 +67,10 @@ def _scan_stdout(path: Path, since_ns: int | None):
                 continue
             if line.startswith("Mock uart"):
                 uart_lines += 1
+                continue
+            if _QOS_RE.match(line):
+                if qos is not None:
+                    qos.append(line[6:].strip())
                 continue
             for kind, rx in _MARKERS:
                 if rx.search(line):
@@ -132,7 +138,7 @@ def _wait(d: Path, wait_s: int, until: str | None, until_ns: int | None) -> dict
 
 
 def sim_status(run_id: str, since_ns: int | None = None, wait_s: int = 0, until: str | None = None,
-               until_ns: int | None = None) -> dict:
+               until_ns: int | None = None, qos: bool = False) -> dict:
     cfg = load()
     d = run_dir(cfg, run_id)
     if d is None:
@@ -142,7 +148,8 @@ def sim_status(run_id: str, since_ns: int | None = None, wait_s: int = 0, until:
     waited = _wait(d, wait_s, until, None if until_ns is None else int(until_ns)) if wait_s else None
     st = load_state(d)
     phase = st.get("phase")
-    last_tick_ps, markers, uart_lines, truncated = _scan_stdout(d / "stdout.log", since_ns)
+    qos_lines = []
+    last_tick_ps, markers, uart_lines, truncated = _scan_stdout(d / "stdout.log", since_ns, qos_lines)
     wd = _watchdog(d / "watchdog.txt")
     start = _parse_time(st.get("sim_started_at", "")) if st.get("sim_started_at") else None
     end = _parse_time(st.get("sim_finished_at", "")) if st.get("sim_finished_at") else None
@@ -159,6 +166,13 @@ def sim_status(run_id: str, since_ns: int | None = None, wait_s: int = 0, until:
     }
     if waited:
         out["wait"] = waited
+    if qos and qos_lines:
+        out["qos"] = qos_lines
+    qos_errors = [l for l in qos_lines if "ERROR" in l]
+    if qos_errors:
+        # the simulation's QoS scoreboard / LLC allocation check found a request with a wrong tag or a refill
+        # outside its CBQRI way mask: always reported, and sim_regress counts the test as failed
+        out["qos_errors"] = qos_errors[:12]
     if uart_lines and (waited or state not in ("queued", "elaborating", "running")):
         # a wait or a finished run: hand back the console too, so one call tells the whole story
         lines = _read_uart(d / "uart.txt")
