@@ -171,6 +171,7 @@ out: { regress_id, passed, failed, running, wall_s, recompiled?, note?, next?,
 | t_socket | accelerator socket: accesses past the last slot return DECERR / 0xdeadbeef (both lanes, 32- and 64-bit) instead of hanging |
 | t_qos | Ssqosid `srmcfg` CSR: reset value, WARL widths, access from M/S (ok), U (illegal), VS/VU (virtual instruction); each core's QoS tag read back through the socket's QoS probe (uncached read and write, tag changes); cached traffic with sharing, AMOs, LR/SC and LLC evictions, checked request by request by the simulation's QoS scoreboard |
 | t_cbqri | LLC CBQRI capacity controller (0x1040_1800): register interface and STATUS codes; isolation (victim lines of RCID 1 survive 80 aggressor accesses of RCID 2 with disjoint way masks: 0 LLC read misses vs 8 with shared masks); code/data masks; 4 cores with disjoint 4-way masks in one LLC set |
+| t_dram | DRAM timing model (0x1A10_6100): real dependent-read latency with the model off, then a fixed latency (every read at least LAT_RD cycles, one counted per hop, none late), late detection when the model is faster than the real memory, the bandwidth limit on a chase and on a stream, writes through the model, pass-through when disabled |
 
 `accel` = the C test of every registered accelerator. Self-checking programs use `software/soc_tests/include/soc_test.h`
 (`CHECK`, a trap guard that turns any exception into a `TRAP mcause=.. mepc=.. mtval=..` line and exit code 127,

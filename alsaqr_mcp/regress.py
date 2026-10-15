@@ -2,7 +2,7 @@
 
 Suites:
   soc    SoC validation (he-soc software/soc_tests: memory paths, atomics, 4-core coherence, interrupts,
-         accelerator socket, QoS IDs) plus hello_culsans and quad_boot
+         accelerator socket, QoS IDs, DRAM timing model) plus hello_culsans and quad_boot
   accel  the C test of every registered accelerator (software/accel/<name>)
   all    both
 A test is a directory with a Makefile (name under he-soc software/, or a path). Self-checking tests print
@@ -18,7 +18,7 @@ from . import accel, sim, soc, status
 from .config import load
 
 SOC_SUITE = ["soc_tests/t_mem", "soc_tests/t_atomics", "soc_tests/t_smp", "soc_tests/t_irq", "soc_tests/t_socket",
-             "soc_tests/t_qos", "soc_tests/t_cbqri", "hello_culsans", "quad_boot"]
+             "soc_tests/t_qos", "soc_tests/t_cbqri", "soc_tests/t_dram", "hello_culsans", "quad_boot"]
 MAX_PARALLEL = 12
 _KEEP = re.compile(r"^(TEST |CHECK FAIL|TRAP)")
 

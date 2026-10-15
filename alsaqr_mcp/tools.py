@@ -146,7 +146,9 @@ TOOLS = {
         "description": (
             "Compile edited RTL/testbench files into the simulator's library with the same include paths and defines the "
             "full build used. Returns compiler errors as {file, line, msg}. The next sim_run / sim_session / "
-            "sim_stall_trace rebuilds the design (~4-5 min). sim_run warns when an edited file was not recompiled."
+            "sim_stall_trace rebuilds the design (~4-5 min). sim_run warns when an edited file was not recompiled. "
+            "When a recompiled file declares a package, the result lists the build's other files that import it "
+            "(package_importers_not_recompiled): recompile those too, or elaboration crashes."
         ),
         "schema": {"type": "object", "properties": {
             "files": {**_LS, "description": "repo-relative (below hardware/) or absolute paths"},

@@ -195,6 +195,45 @@ def rtl_recompile(files: list[str], extra_defines: list[str] | None = None) -> d
     out = {"compiled": ok, "errors": errors[:20]}
     if ok:
         out["note"] = "the library changed: the next sim_run / sim_session / sim_stall_trace elaborates a new snapshot"
+        stale = _stale_package_importers(cfg, [_resolve(cfg, f) for f in files])
+        if stale:
+            out["package_importers_not_recompiled"] = stale
+            out["note"] += ("; a recompiled file declares a package: every file that imports it must be recompiled too "
+                            "(xelab elaborates stale importers against the new package and dies with SIGSEGV): "
+                            "rtl_recompile(files=[...]) with the files listed under package_importers_not_recompiled")
     if errors:
         out["fix"] = "fix the reported lines and recompile"
+    return out
+
+
+_PKG_RE = re.compile(r"^\s*package\s+(\w+)\s*;", re.M)
+
+
+def _stale_package_importers(cfg, compiled: list) -> dict:
+    """Packages declared by the compiled files -> other build sources that reference them and were not compiled."""
+    given = {p.resolve() for p in compiled if p is not None}
+    pkgs = {}
+    for p in given:
+        try:
+            for name in _PKG_RE.findall(p.read_text(errors="ignore")):
+                pkgs[name] = p
+        except OSError:
+            pass
+    if not pkgs:
+        return {}
+    all_src = []
+    for line in (cfg.work / "compile.sh").read_text(errors="ignore").splitlines():
+        if line.startswith(("xvlog", "xvhdl")):
+            all_src += [Path(t) for t in line.split() if t.endswith((".sv", ".v", ".svh"))]
+    out = {}
+    for name, decl in pkgs.items():
+        rx = re.compile(r"\b" + re.escape(name) + r"\s*::|\bimport\s+" + re.escape(name) + r"\b")
+        users = []
+        for s in all_src:
+            if s.resolve() in given or not s.exists():
+                continue
+            if rx.search(s.read_text(errors="ignore")):
+                users.append(sources.rel(cfg, s))
+        if users:
+            out[name] = sorted(set(users))
     return out
