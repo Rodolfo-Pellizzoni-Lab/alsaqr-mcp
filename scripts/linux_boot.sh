@@ -34,7 +34,7 @@ set remotetimeout 120
 target extended-remote :6699
 monitor load_image $DTB $DTB_ADDR
 G
-  for h in $(seq 1 "$NUM_HARTS"); do echo "thread $h"; echo "set \$pc=_start"; done
+  for h in $(seq 1 "$NUM_HARTS"); do echo "thread $h"; echo "set \$pc=_start"; echo "set \$a1=$DTB_ADDR"; done   # a1 = the FDT OpenSBI hands on: the boot ROM left its own built-in DTB there
   for hv in ${SRMCFG_LIST:-}; do h=${hv%%:*}; v=${hv##*:}; echo "thread $((h+1))"; echo "set \$csr385=$v"; echo "echo SRMCFG hart $h: \\n"; echo "p/x \$csr385"; done
   cat <<G
 load

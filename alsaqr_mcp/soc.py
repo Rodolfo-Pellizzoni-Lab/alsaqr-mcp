@@ -347,7 +347,12 @@ def soc_bootflow() -> dict:
                            "claim/complete at 0x0C20_0004 + 0x1000*context",
                    "UART": "0x4000_0000 (the mock UART the console lines come from)",
                    "accelerator socket": "0x1000_0000 (the cluster window; the cluster is excluded): slot s at "
-                                         "+s*0x1_0000, interrupt PLIC ID 9; empty slots answer DECERR with data 0xdeadbeef (CVA6 takes no fault). accel_list / accel_add",
+                                         "+s*0x1_0000, interrupt PLIC ID 9; empty slots answer DECERR with data 0xdeadbeef (CVA6 takes no fault). "
+                                         "Each slot's 64-bit memory port is DMA through a port of the coherence unit (ReadOnce / "
+                                         "WriteUnique): coherent with the cores' write-back L1s, buffers anywhere in DRAM or SRAM, "
+                                         "no cache maintenance; write the buffer, fence, START, read after DONE (t_dma). Under Linux: "
+                                         "generic-uio node + reserved DMA pool, user-space test /usr/bin/socket_dma (he-soc "
+                                         "hardware/accel/README.md). accel_list / accel_add",
                    "QoS IDs (Ssqosid)": "CSR srmcfg 0x181 (RCID bits 3:0, MCID bits 19:16 implemented); every core request carries "
                                         "{AT, MCID, RCID, source core} in the AXI user field; probe 0x103F_0000 returns the user "
                                         "field of the read itself; sim_status(qos=true) lists the tags seen at the LLC. "

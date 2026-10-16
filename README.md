@@ -172,6 +172,7 @@ out: { regress_id, passed, failed, running, wall_s, recompiled?, note?, next?,
 | t_qos | Ssqosid `srmcfg` CSR: reset value, WARL widths, access from M/S (ok), U (illegal), VS/VU (virtual instruction); each core's QoS tag read back through the socket's QoS probe (uncached read and write, tag changes); cached traffic with sharing, AMOs, LR/SC and LLC evictions, checked request by request by the simulation's QoS scoreboard |
 | t_cbqri | LLC CBQRI capacity controller (0x1040_1800): register interface and STATUS codes; isolation (victim lines of RCID 1 survive 80 aggressor accesses of RCID 2 with disjoint way masks: 0 LLC read misses vs 8 with shared masks); code/data masks; 4 cores with disjoint 4-way masks in one LLC set |
 | t_dram | DRAM timing model (0x1A10_6100): real dependent-read latency with the model off, then a fixed latency (every read at least LAT_RD cycles, one counted per hop, none late), late detection when the model is faster than the real memory, the bandwidth limit on a chase and on a stream, writes through the model, pass-through when disabled |
+| t_dma | the accelerator socket's DMA against the cores' write-back L1 caches, with slot 0 (`example`): buffers in the uncached SRAM, a DRAM source still dirty in the L1 (does the device read it?), a DRAM destination the core already caches (does the core see the device's write?), the fence.i recipe, DRAM above 256 MB; prints "source coherent, destination coherent" on the design with the CCU port (stale on one without) and the DMA cycles per word |
 
 `accel` = the C test of every registered accelerator. Self-checking programs use `software/soc_tests/include/soc_test.h`
 (`CHECK`, a trap guard that turns any exception into a `TRAP mcause=.. mepc=.. mtval=..` line and exit code 127,
@@ -184,6 +185,26 @@ again with `regress_id`.
 Custom accelerators go into the accelerator socket in the cluster window (he-soc `hardware/accel/README.md`): slot s
 has its registers at `0x1000_0000 + s*0x1_0000`, a 64-bit memory master port into the SoC and an interrupt (PLIC ID 9).
 Every accelerator has the same ports (a strobe/ack register port, a req/gnt/rvalid memory port, irq_o).
+
+The memory port is DMA through a port of the coherence unit (ACE ReadOnce / WriteUnique): a device reads what a core
+wrote even while it is still dirty in that core's write-back L1, and a device's write invalidates the cores' copies.
+Buffers may be anywhere (DRAM, on-chip SRAM) and need no cache maintenance; software writes the buffer, `fence`s,
+writes START, and reads the result after DONE or the interrupt. Requests are single-beat 64-bit (the socket's
+`axi_from_mem` makes them so). The price is one snoop round trip per word (`t_dma` prints the cycles per word). The
+same holds for emulated I/O devices plugged into a slot (a virtio-mmio disk or NIC): Linux's stock drivers assume
+exactly this coherent DMA.
+
+### A socket device under Linux
+
+`linux_boot` with the bundle's rebuilt Linux (`alsaqr-software/linux/cva6-sdk/install64/fw_payload.elf` and
+`alsaqr-socket.dtb`, config.json `linux`): the device tree has one `generic-uio` node for the socket window
+(`/dev/uio0`: mmap of the registers, `read()` blocks until PLIC interrupt 9) and a 16 MB `shared-dma-pool` at
+0x9F00_0000 nobody else uses; the kernel has UIO, `/proc/self/pagemap` and the virtio-mmio drivers. Verify with
+`linux_cmd(cmd='socket_dma')`: it drives slot 0 with buffers in the pool (`/dev/mem`), in the process's own cached
+pages (physical address from pagemap), through `/dev/uio0`, and with the interrupt, checking every word without any
+cache maintenance (`SOCKET_DMA <mode> ok` per mode, then `SOCKET_DMA PASS`). Source: he-soc
+`software/linux/socket_dma`. A kernel driver does the same with `dma_alloc_coherent` (from the pool when its node
+names it in `memory-region`) or `dma_map_single`, with no `dma_sync` cost.
 
 ### accel_add
 ```
@@ -267,9 +288,12 @@ in:  { boot_id?, wait_s? }  -> { phase: openocd | loading | released | opensbi |
                                  srmcfg_written, kernel, console_tail, logs }
 in:  { cmd, timeout_s? }    -> { cmd, output: [lines] }
 ```
-`linux_boot` reprograms the board (a Linux boot must start clean), loads the DTB and the prebuilt OpenSBI + Linux
-payload over JTAG (~3 min at ~110 KB/s), optionally writes `srmcfg` (CSR 0x181, exposed to GDB as `$csr385`) on the
-given harts before releasing them, and records the console milestones. Harts 2-3 of this board cannot be halted once
+`linux_boot` reprograms the board (a Linux boot must start clean), loads the DTB and the OpenSBI + Linux payload
+over JTAG (~3 min at ~110 KB/s; config.json `linux` names the bundle's rebuilt payload and the socket device tree,
+`payload` / `dtb` override them), sets `a1` of every hart to the DTB's address (OpenSBI hands on the device tree it
+finds there; the boot ROM leaves its own built-in one, which has no bootargs and no socket), optionally writes
+`srmcfg` (CSR 0x181, exposed to GDB as `$csr385`) on the given harts before releasing them, and records the console
+milestones. Harts 2-3 of this board cannot be halted once
 running, so the CSR is written before release rather than at run time. `linux_cmd` types a command one character at
 a time (the SoC UART overruns on bursts) and returns what the console captured up to the next prompt; busybox has
 `devmem` and `hexdump` (`-s`/`-n` in decimal), `/dev/mem` reads of the OpenSBI region are PMP-protected. Only one

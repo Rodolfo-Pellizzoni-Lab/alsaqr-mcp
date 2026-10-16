@@ -282,9 +282,9 @@ value encodes.""",
         "rubric": [
             (1, "Linux reached a shell on the board (OpenSBI banner, kernel, busybox prompt)"),
             (1, "srmcfg of hart 0 was written to 0x30005 before release (e.g. through GDB before continuing) and verified"),
-            (1, "the value read is 0xD4 (0x000000d4)"),
+            (1, "the value read is 0x1A8 (0x000001a8)"),
             (1, "explanation: the accelerator socket's QoS probe returns the AXI user field of the hart's read: "
-                "source port 0, RCID 5 in bits 5:2, MCID 3 in bits 9:6 (AT 0)"),
+                "source port 0 in bits 2:0, RCID 5 in bits 6:3, MCID 3 in bits 10:7 (AT 0)"),
         ],
     },
 }

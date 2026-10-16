@@ -202,7 +202,8 @@ TOOLS = {
             "suite='soc' (default) validates the SoC: t_mem (DRAM through L1/CCU/LLC with every access size and an "
             "eviction sweep, on-chip SRAM), t_atomics (every AMO + LR/SC on DRAM and SRAM), t_smp (4 cores: wake-up, "
             "contended AMO and LR/SC counters, coherence, message passing), t_irq (CLINT software and timer interrupts, "
-            "PLIC registers), t_socket (accelerator socket error responses), hello_culsans, quad_boot. suite='accel' runs "
+            "PLIC registers), t_socket (accelerator socket error responses), t_qos and t_cbqri (QoS tags, LLC CBQRI controller), "
+            "t_dram (DRAM timing model), t_dma (socket DMA against the L1 caches), hello_culsans, quad_boot. suite='accel' runs "
             "every registered accelerator's C test, 'all' both; or tests=[names under he-soc software/ or paths]. "
             "Blocks up to wait_s (max 900); a typical suite needs ~3 min (plus ~4 min if the design was changed). If "
             "tests are still running it returns regress_id: call again with it to keep waiting."
@@ -218,8 +219,9 @@ TOOLS = {
     "accel_add": {
         "description": (
             "Add a custom hardware accelerator to the SoC. The accelerator socket sits in the cluster window: slot s has "
-            "its registers at 0x10000000 + s*0x10000 (64 KB), a 64-bit memory master port into the SoC (DRAM, on-chip "
-            "SRAM), and an interrupt (PLIC ID 9). This creates, from a working template (a DMA-style engine computing "
+            "its registers at 0x10000000 + s*0x10000 (64 KB), a 64-bit memory master port into the SoC through the "
+            "coherence unit (DMA coherent with the cores' caches: buffers anywhere in DRAM or SRAM, no cache maintenance; "
+            "single-beat 64-bit requests), and an interrupt (PLIC ID 9). This creates, from a working template (a DMA-style engine computing "
             "dst[i] = f(src[i]) with CTRL/STATUS/ID registers): hardware/accel/<name>/<name>.sv (edit the RTL), "
             "hardware/accel/<name>/accel_test.svh (unit test body), software/accel/<name>/<name>.c (SoC test), and wires "
             "the module into the socket and the build. The port contract is in the RTL header and hardware/accel/README.md. "
@@ -339,7 +341,7 @@ TOOLS = {
     "board_regress": {
         "description": (
             "Run a suite of self-checking programs on the programmed board, one after the other (blocking, ~30 s each): "
-            "suite soc (t_mem, t_atomics, t_smp, t_irq, t_socket, t_qos, t_cbqri), accel (example, crc32), all; or "
+            "suite soc (t_mem, t_atomics, t_smp, t_irq, t_socket, t_qos, t_cbqri, t_dram, t_dma), accel (example, crc32), all; or "
             "tests=[...]. program=<bitstream or build_id> programs first. One compact table: result, tohost, test line, "
             "failed checks."
         ),
@@ -383,7 +385,7 @@ TOOLS = {
             "Run a shell command on the booted Linux through the board console (typed one character at a time: the SoC "
             "UART overruns on bursts) and return its output lines (up to 200). Blocking up to timeout_s. Examples: "
             "devmem 0x103F0000 32 (the accelerator socket's QoS probe: the user field of this hart's last read, "
-            "port | rcid<<2 | mcid<<6 | at<<10), devmem 0x10401800 32 (LLC CBQRI capacity controller capabilities), "
+            "port | rcid<<3 | mcid<<7 | at<<11), devmem 0x10401800 32 (LLC CBQRI capacity controller capabilities), "
             "hexdump -s <phys> -n <bytes> /dev/mem > /dev/null (a cacheable read workload; the OpenSBI region is "
             "PMP-protected)."
         ),
