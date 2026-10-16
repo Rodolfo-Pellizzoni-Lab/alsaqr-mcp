@@ -350,7 +350,10 @@ def soc_bootflow() -> dict:
                                          "+s*0x1_0000, interrupt PLIC ID 9; empty slots answer DECERR with data 0xdeadbeef (CVA6 takes no fault). "
                                          "Each slot's 64-bit memory port is DMA through a port of the coherence unit (ReadOnce / "
                                          "WriteUnique): coherent with the cores' write-back L1s, buffers anywhere in DRAM or SRAM, "
-                                         "no cache maintenance; write the buffer, fence, START, read after DONE (t_dma). Under Linux: "
+                                         "no cache maintenance; write the buffer, fence, START, read after DONE (t_dma). QoS tags: each register access "
+                                         "hands the slot the requester's user field (reg_user_i) and the slot tags its DMA (mem_user_o; the template "
+                                         "latches the START writer's tag, TAG register 0x28); the socket can force a tag per slot: TAG_POLICY at "
+                                         "0x103F_0100 + 8*s (bit 31 FORCE, [11:0] tag), LAST_USER at +4 (t_iotag). Under Linux: "
                                          "generic-uio node + reserved DMA pool, user-space test /usr/bin/socket_dma (he-soc "
                                          "hardware/accel/README.md). accel_list / accel_add",
                    "QoS IDs (Ssqosid)": "CSR srmcfg 0x181 (RCID bits 3:0, MCID bits 19:16 implemented); every core request carries "

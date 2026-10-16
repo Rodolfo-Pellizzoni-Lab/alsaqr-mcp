@@ -18,7 +18,7 @@ from . import accel, sim, soc, status
 from .config import load
 
 SOC_SUITE = ["soc_tests/t_mem", "soc_tests/t_atomics", "soc_tests/t_smp", "soc_tests/t_irq", "soc_tests/t_socket",
-             "soc_tests/t_qos", "soc_tests/t_cbqri", "soc_tests/t_dram", "soc_tests/t_dma", "hello_culsans", "quad_boot"]
+             "soc_tests/t_qos", "soc_tests/t_cbqri", "soc_tests/t_dram", "soc_tests/t_dma", "soc_tests/t_iotag", "hello_culsans", "quad_boot"]
 MAX_PARALLEL = 12
 _KEEP = re.compile(r"^(TEST |CHECK FAIL|TRAP)")
 
@@ -68,6 +68,28 @@ def _row(test: str, run_id: str | None, st: dict | None, build_err: dict | None 
     return row
 
 
+_DONE = ("finished", "stalled", "timeout", "killed", "elab_failed")
+
+
+def _launch_pending(state: dict, cfg, active: int | None = None) -> bool:
+    """Start queued runs while fewer than MAX_PARALLEL are active; returns whether anything was started."""
+    if active is None:
+        active = sum(1 for e in state["runs"] if "run_id" in e and not e.get("done"))
+    started = False
+    for e in state["runs"]:
+        if active >= MAX_PARALLEL:
+            break
+        if "tag" in e and "run_id" not in e and "build_error" not in e:
+            r = sim.sim_run(e["elf"], tag=e["tag"])
+            if "error" in r:
+                e["build_error"] = r
+                continue
+            e["run_id"], e["elab"] = r["run_id"], r["elab"]
+            active += 1
+            started = True
+    return started
+
+
 def sim_regress(suite: str | None = None, tests: list[str] | None = None, regress_id: str | None = None,
                 wait_s: int = 900) -> dict:
     cfg = load()
@@ -86,8 +108,6 @@ def sim_regress(suite: str | None = None, tests: list[str] | None = None, regres
                 return _err("unknown suite", "suites: soc, accel, all (or pass tests=[...])")
         if not tests:
             return _err("empty suite", "no tests (no accelerators registered?)")
-        if len(tests) > MAX_PARALLEL:
-            return _err("too many tests", f"at most {MAX_PARALLEL} in parallel (each simulation needs ~2.7 GB)")
         fp = cfg.flow_problem()
         if fp:
             return fp
@@ -97,30 +117,43 @@ def sim_regress(suite: str | None = None, tests: list[str] | None = None, regres
                         errors=c.get("errors") or c)
         regress_id = time.strftime("rg%m%d_%H%M%S")
         state = {"regress_id": regress_id, "started": time.time(), "runs": [], "recompiled": c.get("recompiled", [])}
+        # build everything first; at most MAX_PARALLEL simulations run at a time (each needs ~2.7 GB), the rest
+        # are queued and started as runs finish (also on a later call with regress_id)
         for t in tests:
             b = soc.sw_build(t)
             if "error" in b:
                 state["runs"].append({"test": t, "build_error": b})
                 continue
-            tag = f"{regress_id}_{Path(t).name}"
-            r = sim.sim_run(b["elf"], tag=tag)
-            if "error" in r:
-                state["runs"].append({"test": t, "build_error": r})
-                continue
-            state["runs"].append({"test": t, "run_id": r["run_id"], "elab": r["elab"]})
+            state["runs"].append({"test": t, "elf": b["elf"], "tag": f"{regress_id}_{Path(t).name}"})
+        _launch_pending(state, cfg)
         (rdir / f"{regress_id}.json").write_text(json.dumps(state))
-    # wait for every run (shared budget)
+    # wait (shared budget), starting queued runs as others finish
     t_end = time.time() + wait_s
+    while True:
+        active = 0
+        for e in state["runs"]:
+            if "run_id" in e and not e.get("done"):
+                st = status.sim_status(e["run_id"], wait_s=0)
+                if st.get("state") in _DONE:
+                    e["done"] = True
+                else:
+                    active += 1
+        if _launch_pending(state, cfg, active):
+            (rdir / f"{state['regress_id']}.json").write_text(json.dumps(state))
+        pending = any("tag" in e and "run_id" not in e and "build_error" not in e for e in state["runs"])
+        if (not pending and active == 0) or time.time() >= t_end:
+            break
+        time.sleep(min(10, max(1, int(t_end - time.time()))))
     rows = []
     for e in state["runs"]:
         if "build_error" in e:
             rows.append(_row(e["test"], None, None, e["build_error"]))
-            continue
-        left = max(0, int(t_end - time.time()))
-        st = status.sim_status(e["run_id"], wait_s=left)
-        rows.append(_row(e["test"], e["run_id"], st))
+        elif "run_id" not in e:
+            rows.append({"test": Path(e["test"]).name, "result": "queued"})
+        else:
+            rows.append(_row(e["test"], e["run_id"], status.sim_status(e["run_id"], wait_s=0)))
     passed = sum(r.get("result") == "pass" for r in rows)
-    running = sum(r.get("result") == "running" for r in rows)
+    running = sum(r.get("result") in ("running", "queued") for r in rows)
     out = {"regress_id": state["regress_id"], "passed": passed, "failed": len(rows) - passed - running,
            "running": running, "wall_s": int(time.time() - state["started"]), "tests": rows}
     if state.get("recompiled"):

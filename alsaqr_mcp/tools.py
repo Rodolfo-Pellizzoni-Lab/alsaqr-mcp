@@ -203,8 +203,10 @@ TOOLS = {
             "eviction sweep, on-chip SRAM), t_atomics (every AMO + LR/SC on DRAM and SRAM), t_smp (4 cores: wake-up, "
             "contended AMO and LR/SC counters, coherence, message passing), t_irq (CLINT software and timer interrupts, "
             "PLIC registers), t_socket (accelerator socket error responses), t_qos and t_cbqri (QoS tags, LLC CBQRI controller), "
-            "t_dram (DRAM timing model), t_dma (socket DMA against the L1 caches), hello_culsans, quad_boot. suite='accel' runs "
+            "t_dram (DRAM timing model), t_dma (socket DMA against the L1 caches), t_iotag (QoS tags on socket DMA), hello_culsans, "
+            "quad_boot. suite='accel' runs "
             "every registered accelerator's C test, 'all' both; or tests=[names under he-soc software/ or paths]. "
+            "At most 12 simulations run at a time (~2.7 GB each); a larger suite queues the rest and starts them as runs finish. "
             "Blocks up to wait_s (max 900); a typical suite needs ~3 min (plus ~4 min if the design was changed). If "
             "tests are still running it returns regress_id: call again with it to keep waiting."
         ),
@@ -221,7 +223,9 @@ TOOLS = {
             "Add a custom hardware accelerator to the SoC. The accelerator socket sits in the cluster window: slot s has "
             "its registers at 0x10000000 + s*0x10000 (64 KB), a 64-bit memory master port into the SoC through the "
             "coherence unit (DMA coherent with the cores' caches: buffers anywhere in DRAM or SRAM, no cache maintenance; "
-            "single-beat 64-bit requests), and an interrupt (PLIC ID 9). This creates, from a working template (a DMA-style engine computing "
+            "single-beat 64-bit requests), QoS tags (reg_user_i tells it which hart/RCID is accessing it; mem_user_o tags its "
+            "DMA, by default with the hart that wrote START; the socket can force a tag per slot), and an interrupt (PLIC ID 9). "
+            "This creates, from a working template (a DMA-style engine computing "
             "dst[i] = f(src[i]) with CTRL/STATUS/ID registers): hardware/accel/<name>/<name>.sv (edit the RTL), "
             "hardware/accel/<name>/accel_test.svh (unit test body), software/accel/<name>/<name>.c (SoC test), and wires "
             "the module into the socket and the build. The port contract is in the RTL header and hardware/accel/README.md. "
@@ -244,7 +248,8 @@ TOOLS = {
             "hardware/accel/<name>/accel_test.svh (inside an initial block; functions/tasks for a reference model go "
             "in accel_test_decls.svh, included at module scope), with helpers wr/rd/rd_check (registers), mem_write/mem_read/mem_fill "
             "(a sparse 64-bit memory behind the accelerator's memory port, with random stalls and protocol checks), "
-            "check, wait_irq, wait_reg, cycles; max_cycles / reg_timeout can be set (full list in "
+            "check, wait_irq, wait_reg, cycles, set_user (the QoS user field the register driver presents) and last_mem_user (the tag of "
+            "the most recent granted memory request); max_cycles / reg_timeout can be set (full list in "
             "hardware/accel/tb/accel_tb.sv). Every check/rd_check/wait_* call counts as one check. Returns pass/fail, the "
             "test's own $display lines (output), the log path and the failing checks, or compile/elaboration errors with file:line. The SoC's IP library is visible, so the "
             "accelerator may instantiate common_cells etc. waves=true writes a VCD of the accelerator's signals."
@@ -341,7 +346,7 @@ TOOLS = {
     "board_regress": {
         "description": (
             "Run a suite of self-checking programs on the programmed board, one after the other (blocking, ~30 s each): "
-            "suite soc (t_mem, t_atomics, t_smp, t_irq, t_socket, t_qos, t_cbqri, t_dram, t_dma), accel (example, crc32), all; or "
+            "suite soc (t_mem, t_atomics, t_smp, t_irq, t_socket, t_qos, t_cbqri, t_dram, t_dma, t_iotag), accel (example, crc32), all; or "
             "tests=[...]. program=<bitstream or build_id> programs first. One compact table: result, tohost, test line, "
             "failed checks."
         ),

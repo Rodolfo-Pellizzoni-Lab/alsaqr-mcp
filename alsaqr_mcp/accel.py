@@ -73,7 +73,7 @@ def _rtl_files(p: _P, name: str) -> list[Path]:
 
 
 # ---------------------------------------------------------------- generated files
-_PORTS = ("reg_we_i reg_addr_i reg_wdata_i reg_wstrb_i").split()
+_PORTS = ("reg_we_i reg_addr_i reg_wdata_i reg_wstrb_i reg_user_i").split()
 
 
 def _gen_slots(p: _P, reg: dict) -> str:
@@ -91,6 +91,7 @@ def _gen_slots(p: _P, reg: dict) -> str:
          "  input  logic                                       reg_we_i,",
          "  input  logic [31:0]                                reg_wdata_i,",
          "  input  logic [3:0]                                 reg_wstrb_i,",
+         "  input  logic [15:0]                                reg_user_i,",
          "  output logic                                       reg_ack_o,",
          "  output logic                                       reg_err_o,",
          "  output logic [31:0]                                reg_rdata_o,",
@@ -100,6 +101,7 @@ def _gen_slots(p: _P, reg: dict) -> str:
          "  output logic [NumSlots-1:0][63:0]                  mem_addr_o,",
          "  output logic [NumSlots-1:0][63:0]                  mem_wdata_o,",
          "  output logic [NumSlots-1:0][7:0]                   mem_strb_o,",
+         "  output logic [NumSlots-1:0][15:0]                  mem_user_o,",
          "  input  logic [NumSlots-1:0]                        mem_rvalid_i,",
          "  input  logic [63:0]                                mem_rdata_i,",
          "  input  logic [NumSlots-1:0]                        mem_err_i,",
@@ -128,6 +130,7 @@ def _gen_slots(p: _P, reg: dict) -> str:
                   f"    .mem_addr_o   ( mem_addr_o[{s}]   ),",
                   f"    .mem_wdata_o  ( mem_wdata_o[{s}]  ),",
                   f"    .mem_strb_o   ( mem_strb_o[{s}]   ),",
+                  f"    .mem_user_o   ( mem_user_o[{s}]   ),",
                   f"    .mem_rvalid_i ( mem_rvalid_i[{s}] ),",
                   "    .mem_rdata_i  ( mem_rdata_i       ),",
                   f"    .mem_err_i    ( mem_err_i[{s}]    ),",
@@ -140,7 +143,7 @@ def _gen_slots(p: _P, reg: dict) -> str:
                   f"  assign rdata[{s}] = 32'hdeadbeef;",
                   f"  assign present[{s}] = 1'b0;",
                   f"  assign mem_req_o[{s}] = 1'b0; assign mem_we_o[{s}] = 1'b0; assign mem_addr_o[{s}] = '0;",
-                  f"  assign mem_wdata_o[{s}] = '0; assign mem_strb_o[{s}] = '0; assign irq_o[{s}] = 1'b0;", ""]
+                  f"  assign mem_wdata_o[{s}] = '0; assign mem_strb_o[{s}] = '0; assign mem_user_o[{s}] = '0; assign irq_o[{s}] = 1'b0;", ""]
     L += ["endmodule", ""]
     return "\n".join(L)
 

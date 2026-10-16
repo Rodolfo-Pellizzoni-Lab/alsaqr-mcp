@@ -19,7 +19,7 @@ from . import soc
 from .config import ROOT, load
 
 MAX_WAIT_S = 900
-SUITES = {"soc": ["t_mem", "t_atomics", "t_smp", "t_irq", "t_socket", "t_qos", "t_cbqri", "t_dram", "t_dma"],
+SUITES = {"soc": ["t_mem", "t_atomics", "t_smp", "t_irq", "t_socket", "t_qos", "t_cbqri", "t_dram", "t_dma", "t_iotag"],
           "accel": ["example", "crc32"]}
 
 
