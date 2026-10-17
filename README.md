@@ -175,6 +175,7 @@ out: { regress_id, passed, failed, running, wall_s, recompiled?, note?, next?,
 | t_iotag | QoS tags on the socket's DMA ("I/O on behalf of an RCID"): TAG / LAST_USER follow the srmcfg of the hart that wrote START (core 0, then core 1 with its source port), the socket's per-slot TAG_POLICY forces a tag the accelerator cannot override, and the tag reaches the LLC: accelerator DMA as the CBQRI aggressor leaves victim lines of another RCID alone with disjoint way masks and evicts them when forced into their RCID |
 | t_part | LLC way partitioning between an accelerator and the cores, as performance: app core (chain over 8 lines per set), streaming core, and the accelerator (slot 0, DMA tagged with the starting hart's RCID) under shared, fitting and too-small way masks, with the DRAM timing model off and on; probes with the aggressors stopped show what each principal keeps (capacity follows the masks exactly), while latency under load is set by the coherence unit's serialization, one transaction at a time (hardware/accel/README.md) |
 | t_dma | the accelerator socket's DMA against the cores' write-back L1 caches, with slot 0 (`example`): buffers in the uncached SRAM, a DRAM source still dirty in the L1 (does the device read it?), a DRAM destination the core already caches (does the core see the device's write?), the fence.i recipe, DRAM above 256 MB; prints "source coherent, destination coherent" on the design with the CCU port (stale on one without) and the DMA cycles per word |
+| t_eth | the AMD AXI Ethernet subsystem and AXI DMA (branch `ethernet`, bender `xilinx-ethernet=1`): DMA reset and rings, MDIO scan, frames of 14 to 1514 bytes looped back (MAC stand-in in xsim, PCS/PMA loopback on the board) from cached DRAM buffers through the coherence unit, a burst that fills the TX ring, the two DMA interrupts at the PLIC, and on the board a listen window on the LAN |
 
 `accel` = the C test of every registered accelerator. Self-checking programs use `software/soc_tests/include/soc_test.h`
 (`CHECK`, a trap guard that turns any exception into a `TRAP mcause=.. mepc=.. mtval=..` line and exit code 127,
@@ -303,6 +304,18 @@ running, so the CSR is written before release rather than at run time. `linux_cm
 a time (the SoC UART overruns on bursts) and returns what the console captured up to the next prompt; busybox has
 `devmem` and `hexdump` (`-s`/`-n` in decimal), `/dev/mem` reads of the OpenSBI region are PMP-protected. Only one
 process may read the console: the tools kill a previous capture before starting their own.
+
+### Booting over Ethernet: scripts/netboot_server.py
+```
+netboot_server.py --dir <install64> [--port 6969] [--once] [--quiet]
+```
+With the Ethernet bitstream (he-soc branch `ethernet`, `XILINX_ETH=1` in config.json) the SoC can fetch its Linux
+payload over the board's 1G port instead of JTAG: `board_run` loads the small loader `software/netboot`
+(`make fpga=1 SERVER_IP=<host>`), which gets an address with DHCP, finds this server with a broadcast
+(`ALSAQR-NETBOOT?` on UDP 6969) and reads `alsaqr.dtb` and `fw_payload.bin` with TFTP (blksize 1428) before jumping
+into the payload exactly as the JTAG flow would. The server is unprivileged (no port 69, no root) and prints one
+line per event; `SERVED <file> <bytes> <ms>` is what callers parse, `--once` exits after the payload. The directory
+must hold the two files under those names (symlinks to the bundle's `install64` outputs are fine).
 
 ## Software and navigation tools
 

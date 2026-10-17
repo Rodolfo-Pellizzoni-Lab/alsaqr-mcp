@@ -60,7 +60,8 @@
    "SIMPLE_PAD": "SPI-I2C-UART-SDIO",
    "USE_OT": "0",
    "ETH2FMC_NO_PAD": "0",
-   "NUM_CORES": "4"
+   "NUM_CORES": "4",
+   "XILINX_ETH": "1"
   },
   "path_prepend": "~/.cache/he-soc-simexp/fpga_bin",
   "soc_mhz": 50,
@@ -70,7 +71,7 @@
    "route": "Default"
   },
   "builds": "~/he-soc/hardware/xsim/work/mcp/fpga",
-  "bender_make": "simple-padframe=1 exclude-cluster=1 exclude-rot=1 quad-core=1 scripts-bender-fpga-ddr"
+  "bender_make": "simple-padframe=1 exclude-cluster=1 exclude-rot=1 quad-core=1 exclude-ethernet=1 xilinx-ethernet=1 scripts-bender-fpga-ddr"
  },
  "board": {
   "bundle": "~/alsaqr-software",

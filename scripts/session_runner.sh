@@ -4,6 +4,8 @@
 set -u
 cd "$WORK"
 source "$VIVADO_SETTINGS" >/dev/null 2>&1
+# Xilinx IP simulation libraries (hardware/xsim/xilinx_ip.sh): the Ethernet subsystem's AXI DMA
+XILINX_IP_LIBS=$([ -f "$WORK/xilinx_ip/libs.txt" ] && sed 's/^/-L /' "$WORK/xilinx_ip/libs.txt" | tr '\n' ' ')
 
 set_phase() {
   python3 - "$SESSION_DIR/state.json" "$@" <<'EOF'
@@ -27,7 +29,7 @@ if [ "$NEED_ELAB" = "1" ]; then
     xvlog -sv -work work -L uvm $TB_OPTS "$TB_FILE" > "$WORK/xvlog_$SNAP.log" 2>&1 \
       || { grep -E 'ERROR' "$WORK/xvlog_$SNAP.log" | head -5 > "$SESSION_DIR/elab_errors.txt"; set_phase elab_failed; flock -u 9; exit 1; }
     { cat "$WORK/tb_units.txt" 2>/dev/null; find "$WORK/xsim.dir/work" -maxdepth 1 -type f -newer "$WORK/.tb_xvlog_start" -printf "%f\n"; } | sort -u > "$WORK/tb_units.tmp" && mv "$WORK/tb_units.tmp" "$WORK/tb_units.txt"
-    xelab -relax -L uvm -timescale 1ps/1ps --ignore_assertions --debug typical --snapshot "$SNAP" work.ariane_tb \
+    xelab -relax -L uvm $XILINX_IP_LIBS -timescale 1ps/1ps --ignore_assertions --debug typical --snapshot "$SNAP" work.ariane_tb \
       -sv_root "$DPI_DIR" -sv_lib libdpi $GENERICS > "$WORK/xelab_$SNAP.log" 2>&1 \
       || { grep -E 'ERROR' "$WORK/xelab_$SNAP.log" | head -5 > "$SESSION_DIR/elab_errors.txt"; set_phase elab_failed; flock -u 9; exit 1; }
     touch "$WORK/$SNAP.ok"
