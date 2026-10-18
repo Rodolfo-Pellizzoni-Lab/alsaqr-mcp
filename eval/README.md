@@ -38,6 +38,7 @@ names the agent sees).
 | P2_find_when | simulate + search | find to 4 µs when cores 2 and 3 leave the boot ROM and which interrupt line woke them | sim_session (stepping + probe) |
 | D1_quad_sync | debug: software | a four-core rendezvous never finishes: core 3 is enabled on the wrong PLIC context (machine instead of supervisor; only the supervisor line wakes a core parked in wfi with mie = 0); fix and verify | sim_run, sim_status, soc_bootflow, sw_build |
 | D2_rtl_stall | debug: RTL | the latest commit replaced riscv-dbg `dm_mem.sv` with the upstream version without the xsim ring rewrite; the simulation stalls at ~2.017 ms; find, fix (restore + recompile), verify | sim_status (stall), sim_stall_trace, rtl_changes, rtl_recompile |
+| B3_linux_netboot | board linux | boot the rebuilt Linux over the board's Ethernet port instead of JTAG; report the payload transfer time, CPUs, eth0 address and whether this machine can ping the board | linux_boot (netboot=true), linux_status, linux_cmd |
 | D3_fw_load | debug: firmware/hardware | evu_test's APMU firmware is loaded with memcpy; the ISPM indexes by byte address and ignores byte strobes, so the image's sub-word tail corrupts the last instruction and the firmware logs nothing; find, fix (word copies), verify | sw_build, sim_run, sim_session, soc_lookup |
 
 Not covered yet: `sim_session force/release`, `rtl_changes op=revert`, and long workloads (pmu_mempol_synth, ~48 min
@@ -107,6 +108,7 @@ the alsaqr-software bundle); the baseline writes its own OpenOCD / GDB / console
 | F1_fpga_gate (fpga1d, after) | 116k / 248k | 53% | $0.11 / $0.22 | 26 / 249 | 4.00 / 4.00 of 4 |
 | B1_board_test | 276k / 1,919k | 86% | $0.14 / $0.67 | 148 / 455 | 3.00 / 3.00 of 3 |
 | B2_linux_qos | 91k / 1,280k | 93% | $0.07 / $0.45 | 377 / 709 | 4.00 / 4.00 of 4 |
+| B3_linux_netboot | 96k / 1,092k | 91% | $0.06 / $0.44 | 201 / 371 | 4.00 / 3.50 of 4 |
 
 F1 before and after: in `fpga1c` the MCP agent called `fpga_status`, then read the reports anyway and reopened the
 routed checkpoint in Vivado (3.5 minutes, 19 GB) to check the MMCM's attributes and the hold endpoints, because the
