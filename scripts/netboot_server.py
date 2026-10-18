@@ -7,7 +7,8 @@ port, so it runs as a normal user next to the campus DHCP server.
 
 The loader asks for alsaqr.dtb and fw_payload.bin. With --once the server exits after the payload has been
 served completely (the loader jumps into it right after). Prints one line per event; "SERVED <file> <bytes> <ms>"
-is what callers parse.
+is what callers parse. It also accepts TFTP writes (WRQ, e.g. busybox `tftp -p -l FILE -r NAME HOST 6969` from
+Linux on the board) into the same directory: "STORED <file> <bytes> <ms>".
 """
 import argparse, os, select, socket, struct, sys, time
 
@@ -90,6 +91,73 @@ class Transfer:
         self.f.close()
 
 
+class Upload:
+    """One TFTP write in progress (WRQ): ACK 0 (or OACK), then data blocks in lock step; done at a short block."""
+
+    def __init__(self, path, peer, blksize, quiet):
+        self.path, self.peer, self.blksize, self.quiet = path, peer, blksize, quiet
+        self.f = open(path, "wb")
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("0.0.0.0", 0))
+        self.block = 0          # last block received
+        self.size = 0
+        self.t0 = time.time()
+        self.sent_at = 0.0
+        self.retries = 0
+        self.done = False
+        self.oack = False
+
+    def ack(self):
+        if self.block == 0 and self.oack:
+            self.sock.sendto(b"\x00\x06" + b"blksize\x00" + str(self.blksize).encode() + b"\x00", self.peer)
+        else:
+            self.sock.sendto(struct.pack("!HH", 4, self.block & 0xFFFF), self.peer)
+        self.sent_at = time.time()
+
+    def start(self, oack):
+        self.oack = oack
+        self.ack()
+
+    def on_packet(self, pkt, peer):
+        if peer != self.peer or len(pkt) < 4:
+            return
+        op, n = struct.unpack("!HH", pkt[:4])
+        if op == 5:
+            log(self.quiet, "ERROR from client:", pkt[4:].decode(errors="replace"))
+            self.done = True
+            return
+        if op != 3:
+            return
+        if n == ((self.block + 1) & 0xFFFF):
+            self.block += 1
+            self.f.write(pkt[4:])
+            self.size += len(pkt) - 4
+            self.retries = 0
+            self.ack()
+            if len(pkt) - 4 < self.blksize:
+                self.f.close()
+                ms = int((time.time() - self.t0) * 1000)
+                print(f"STORED {os.path.basename(self.path)} {self.size} {ms}", flush=True)
+                self.done = True
+        elif n == (self.block & 0xFFFF):
+            self.ack()              # a repeated block: our ACK was lost
+
+    def on_timeout(self):
+        if time.time() - self.sent_at < 1.0:
+            return
+        self.retries += 1
+        if self.retries > 5:
+            log(self.quiet, "TIMEOUT", os.path.basename(self.path), "at block", self.block)
+            self.done = True
+            return
+        self.ack()
+
+    def close(self):
+        self.sock.close()
+        if not self.f.closed:
+            self.f.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", required=True)
@@ -118,7 +186,7 @@ def main():
                     parts = pkt[2:].split(b"\x00")
                     name = parts[0].decode(errors="replace")
                     opts = dict(zip([p.decode().lower() for p in parts[2:-1:2]], [p.decode() for p in parts[3::2]]))
-                    path = os.path.realpath(os.path.join(root, name))
+                    path = os.path.abspath(os.path.join(root, name))        # symlinks in DIR are fine; no escaping it
                     if not path.startswith(root + os.sep) or not os.path.isfile(path):
                         ctl.sendto(b"\x00\x05\x00\x01" + b"file not found\x00", peer)
                         log(a.quiet, "RRQ", name, "from", peer[0], "-> not found")
@@ -128,6 +196,19 @@ def main():
                     transfers.append(t)
                     log(a.quiet, "RRQ", name, f"({t.size} bytes, blksize {blksize}) from {peer[0]}:{peer[1]}")
                     t.start()
+                    continue
+                if len(pkt) >= 4 and pkt[:2] == b"\x00\x02":          # WRQ: store the file in DIR
+                    parts = pkt[2:].split(b"\x00")
+                    name = os.path.basename(parts[0].decode(errors="replace"))
+                    opts = dict(zip([p.decode().lower() for p in parts[2:-1:2]], [p.decode() for p in parts[3::2]]))
+                    if not name or name.startswith("."):
+                        ctl.sendto(b"\x00\x05\x00\x02" + b"bad name\x00", peer)
+                        continue
+                    blksize = max(8, min(int(opts.get("blksize", "512")), 65464))
+                    t = Upload(os.path.join(root, name), peer, blksize, a.quiet)
+                    transfers.append(t)
+                    log(a.quiet, "WRQ", name, f"(blksize {blksize}) from {peer[0]}:{peer[1]}")
+                    t.start("blksize" in opts)
                     continue
             else:
                 for t in transfers:

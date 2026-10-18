@@ -287,6 +287,21 @@ value encodes.""",
                 "source port 0 in bits 2:0, RCID 5 in bits 6:3, MCID 3 in bits 10:7 (AT 0)"),
         ],
     },
+    "B3_linux_netboot": {
+        "kind": "board linux", "timeout_s": 3000, "tools": ["linux_boot", "linux_status", "linux_cmd"], "serial": True,
+        "extra_env": "{BOARD_LINE}",
+        "prompt": """Task: boot the alsaqr-software bundle's rebuilt Linux (the one with the Xilinx Ethernet driver, \
+cva6-sdk/install64) on the connected VCU118 by loading it over the board's Ethernet port from this machine rather than \
+over JTAG, then report: how long the payload transfer took, how many CPUs Linux brought up, the IPv4 address of eth0 \
+as seen from the Linux shell, and whether this machine can ping the board.""",
+        "rubric": [
+            (1, "Linux was booted with the files fetched over Ethernet (the network loader + boot server, not the JTAG "
+                "payload load) and reached a shell"),
+            (1, "the payload transfer took about 25-30 s (19.5 MB)"),
+            (1, "4 CPUs brought up, eth0 = 10.42.0.2"),
+            (1, "the board answers ping from this machine (10.42.0.1 -> 10.42.0.2)"),
+        ],
+    },
 }
 
 def prompt(task: str, cond: str, sb: str) -> str:

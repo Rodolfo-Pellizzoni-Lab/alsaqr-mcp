@@ -305,18 +305,34 @@ a time (the SoC UART overruns on bursts) and returns what the console captured u
 `devmem` and `hexdump` (`-s`/`-n` in decimal), `/dev/mem` reads of the OpenSBI region are PMP-protected. Only one
 process may read the console: the tools kill a previous capture before starting their own.
 
-### Booting over Ethernet: scripts/netboot_server.py
+### Booting over Ethernet: linux_boot netboot=true, scripts/netboot_server.py
 ```
-netboot_server.py --dir <install64> [--port 6969] [--once] [--quiet]
+netboot_server.py --dir DIR [--port 6969] [--once] [--quiet]
 ```
-With the Ethernet bitstream (he-soc branch `ethernet`, `XILINX_ETH=1` in config.json) the SoC can fetch its Linux
-payload over the board's 1G port instead of JTAG: `board_run` loads the small loader `software/netboot`
-(`make fpga=1 SERVER_IP=<host>`), which gets an address with DHCP, finds this server with a broadcast
-(`ALSAQR-NETBOOT?` on UDP 6969) and reads `alsaqr.dtb` and `fw_payload.bin` with TFTP (blksize 1428) before jumping
-into the payload exactly as the JTAG flow would. The server is unprivileged (no port 69, no root) and prints one
-line per event; `SERVED <file> <bytes> <ms>` is what callers parse, `--once` exits after the payload. The directory
-must hold the two files under those names (symlinks to the bundle's `install64` outputs are fine). On the board the
-loader waits for a cable indefinitely ("no link yet (cable?)" every 15 s) and retries DHCP.
+With the Ethernet bitstream (he-soc branch `ethernet`, `XILINX_ETH=1` in config.json) `linux_boot netboot=true`
+boots the bundle's rebuilt Linux (cva6-sdk/install64: the kernel with the Xilinx Ethernet driver and the socket DTB;
+config `board.linux.netboot`) over the board's 1G port: only the 216 KB loader `he-soc/software/netboot` goes over
+JTAG (on the harts OpenOCD can reach; the loader wakes the others), the board takes 10.42.0.2, finds this machine's
+server with a broadcast (`ALSAQR-NETBOOT?` on UDP 6969) and reads `alsaqr.dtb` and `fw_payload.bin` with TFTP
+(blksize 1428, 19.5 MB in ~26 s), then jumps into the payload with all four harts. Milestones from the release of the
+loader: link ~4 s, transfer done ~30 s, OpenSBI ~34 s, kernel ~46 s, shell ~90 s; `linux_status` reports them
+(`t_link_s`, `t_transfer_s`, `transfer_ms`, ...) and `linux_cmd` works as after a JTAG boot. Linux comes up with
+`smp: Brought up 1 node, 4 CPUs` and eth0 = 10.42.0.2 (static, `S45eth`), so this machine can ping it and talk to it
+(measured: ping 4-7 ms both ways; TCP from this machine `wget` 19.5 MB in 34 s, CPU-bound on the SoC; TFTP from the
+board `tftp -p ... 10.42.0.1 6969` 4 MB in 21 s; checksums intact).
+
+The link is private: a USB Ethernet adapter of this machine cabled to the VCU118's RJ45, this machine 10.42.0.1/24
+(a NetworkManager profile with a manual address: `sudo nmcli con mod "<profile>" ipv4.method manual ipv4.addresses
+10.42.0.1/24 ipv6.method disabled && sudo nmcli con up "<profile>"`; a plain `ip addr add` is dropped when the
+default DHCP profile auto-activates) and `sudo ufw allow in on <adapter>`. The loader is built with
+`make fpga=1 SERVER_IP=10.42.0.1 STATIC_IP=10.42.0.2 STATIC_MASK=255.255.255.0 STATIC_GW=10.42.0.1`; the tool
+refuses to start when this machine has no 10.42.0.1 and says what to run.
+
+The server is unprivileged (no port 69, no root), serves one directory (symlinks are fine) and prints one line per
+event: `SERVED <file> <bytes> <ms>` for reads, `STORED <file> <bytes> <ms>` for TFTP writes into the directory (the
+board uploads with busybox `tftp -p -l FILE -r NAME -b 1428 10.42.0.1 6969`); `--once` exits after the payload. The
+loader waits for a cable indefinitely ("no link yet (cable?)" every 15 s) and retries discovery for ever, printing
+the MAC's statistics counters each round.
 
 ## Software and navigation tools
 

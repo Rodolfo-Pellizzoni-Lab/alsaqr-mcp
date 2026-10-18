@@ -85,7 +85,14 @@
    "dtb": "~/alsaqr-software/linux/prebuilt/alsaqr.dtb",
    "dtb_addr": "0x81800000",
    "num_harts": 4,
-   "console_capture_s": 7200
+   "console_capture_s": 7200,
+   "netboot": {
+    "elf": "~/he-soc/software/netboot/netboot.riscv",
+    "payload": "~/alsaqr-software/linux/cva6-sdk/install64/fw_payload.elf",
+    "dtb": "~/alsaqr-software/linux/cva6-sdk/install64/alsaqr-socket.dtb",
+    "host_ip": "10.42.0.1",
+    "port": 6969
+   }
   }
  }
 }

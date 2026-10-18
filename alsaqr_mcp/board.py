@@ -251,18 +251,44 @@ def board_regress(suite: str | None = None, tests: list[str] | None = None, prog
             "wall_s": int(time.time() - t0), "tests": rows}
 
 
+def _host_has_ip(ip: str) -> bool:
+    r = subprocess.run(["ip", "-4", "-o", "addr"], capture_output=True, text=True)
+    return f" {ip}/" in r.stdout
+
+
 def linux_boot(bitstream: str | None = None, program: bool = True, srmcfg: dict | None = None, payload: str | None = None,
-               dtb: str | None = None, wait_s: int = 0) -> dict:
+               dtb: str | None = None, wait_s: int = 0, netboot: bool = False) -> dict:
     cfg = load()
     pb = _problem(cfg)
     if pb:
         return pb
     lx = cfg.board_linux
+    nb = dict(lx.get("netboot", {}))
+    if netboot:                                   # Ethernet: the rebuilt Linux (axienet) and the socket DTB by default
+        payload = payload or nb.get("payload") or lx["payload"]
+        dtb = dtb or nb.get("dtb") or lx["dtb"]
     payload = Path(os.path.expanduser(payload or lx["payload"]))
     dtb_p = Path(os.path.expanduser(dtb or lx["dtb"]))
     for f in (payload, dtb_p):
         if not f.exists():
             return _err("missing Linux artifact", f"{f} (config board.linux)")
+    nb_env = {}
+    if netboot:
+        if srmcfg:
+            return _err("srmcfg needs the JTAG boot", "over Ethernet the harts are released by the loader, not by GDB")
+        elf = Path(os.path.expanduser(nb.get("elf", str(cfg.repo / "software" / "netboot" / "netboot.riscv"))))
+        if not elf.exists():
+            return _err("no network boot loader", f"{elf}: build it with make -C software/netboot fpga=1 SERVER_IP=... "
+                        "STATIC_IP=... (he-soc branch ethernet), or set board.linux.netboot.elf")
+        binp = payload if payload.suffix == ".bin" else payload.with_suffix(".bin")
+        if not binp.exists():
+            return _err("no payload binary", f"{binp}: the loader fetches fw_payload.bin (next to the .elf)")
+        host_ip = nb.get("host_ip", "10.42.0.1")
+        if not _host_has_ip(host_ip):
+            return _err("no address on the private link", f"this machine has no {host_ip}: give the adapter that faces "
+                        f"the board its address (e.g. sudo nmcli con mod <connection> ipv4.method manual ipv4.addresses "
+                        f"{host_ip}/24 && sudo nmcli con up <connection>), and allow it in the firewall")
+        nb_env = {"NETBOOT_ELF": str(elf), "NETBOOT_BIN": str(binp), "NETBOOT_PORT": str(nb.get("port", 6969))}
     if program:
         bit, e = _bitstream_of(cfg, bitstream)
         if e:
@@ -289,19 +315,24 @@ def linux_boot(bitstream: str | None = None, program: bool = True, srmcfg: dict 
         except ValueError:
             return _err("bad srmcfg", "srmcfg = {hart: value}, e.g. {'0': '0x30005'} (RCID 5, MCID 3)")
     state = {"boot_id": boot_id, "phase": "queued", "bitstream": bs.get("bitstream"), "payload": str(payload),
-             "dtb": str(dtb_p), "srmcfg": tags, "started": time.time()}
+             "dtb": str(dtb_p), "srmcfg": tags, "via": "ethernet" if netboot else "jtag", "started": time.time()}
     (bdir / "boot.json").write_text(json.dumps(state, indent=1))
     env = dict(os.environ)
     env.update({"BOOT_DIR": str(bdir), "BUNDLE": str(cfg.board_bundle), "PAYLOAD": str(payload), "DTB": str(dtb_p),
                 "DTB_ADDR": lx.get("dtb_addr", "0x81800000"), "UART": cfg.board_uart, "BAUD": str(cfg.board_baud),
-                "UART_SECS": str(lx.get("console_capture_s", 7200)), "NUM_HARTS": str(lx.get("num_harts", 4)),
-                "SRMCFG_LIST": " ".join(tags), "SCRIPTS": str(ROOT / "scripts")})
+                "UART_SECS": str(lx.get("console_capture_s", 7200)),
+                # over Ethernet only the loader is loaded, on the harts OpenOCD can reach (the rest sit in the boot ROM and
+                # the loader wakes them itself); a halt request left pending on an unreachable hart would catch it later
+                "NUM_HARTS": str(cfg.board_openocd_cores if netboot else lx.get("num_harts", 4)),
+                "SRMCFG_LIST": " ".join(tags), "SCRIPTS": str(ROOT / "scripts"), **nb_env})
     with open(bdir / "runner.log", "w") as out:
         subprocess.Popen(["setsid", "bash", str(ROOT / "scripts" / "linux_boot.sh")], env=env, stdout=out,
                          stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
     bs["linux_boot"] = boot_id
     _save_board(cfg, bs)
-    res = {"boot_id": boot_id, "phase": "queued", "expect": "payload load ~3 min, shell ~1 min later",
+    res = {"boot_id": boot_id, "phase": "queued", "via": "ethernet" if netboot else "jtag",
+           "expect": ("loader over JTAG ~1 min, payload over Ethernet ~30 s, shell ~1 min later" if netboot
+                      else "payload load ~3 min, shell ~1 min later"),
            "next": f"linux_status(boot_id='{boot_id}', wait_s=600)"}
     if wait_s:
         res = linux_status(boot_id, wait_s)
@@ -330,7 +361,8 @@ def linux_status(boot_id: str | None = None, wait_s: int = 0) -> dict:
     uart = bdir / "uart.log"
     lines = [l for l in uart.read_bytes().decode("utf-8", "replace").replace("\r", "").splitlines() if l.strip()] if uart.exists() else []
     out = {"boot_id": boot_id, "phase": st["phase"], "elapsed_s": int(time.time() - st["started"]),
-           "milestones": {k: st[k] for k in ("t_opensbi_s", "t_kernel_s", "t_shell_s") if k in st},
+           "milestones": {k: st[k] for k in ("t_link_s", "t_transfer_s", "transfer_ms", "t_opensbi_s", "t_kernel_s", "t_shell_s") if k in st},
+           "via": st.get("via", "jtag"),
            "console_lines": len(lines), "console_tail": lines[-6:], "logs": str(bdir)}
     if st.get("srmcfg"):
         g = (bdir / "gdb.log").read_text() if (bdir / "gdb.log").exists() else ""

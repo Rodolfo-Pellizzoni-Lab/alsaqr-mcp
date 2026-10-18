@@ -358,27 +358,34 @@ TOOLS = {
     },
     "linux_boot": {
         "description": (
-            "Boot the prebuilt Linux (alsaqr-software: OpenSBI fw_payload + DTB, 1 CPU, console 38400) on the board in "
-            "the background: programs the bitstream first unless program=false (current one, or bitstream=<.bit / "
-            "build_id>), loads the DTB and the 15 MB payload over JTAG (~3 min), optionally writes QoS tags into srmcfg "
-            "(CSR 0x181) of given harts before releasing them (srmcfg={'0': '0x30005'} = RCID 5, MCID 3 on hart 0; "
-            "nothing else touches that CSR, so every access of that hart carries the tag), then watches the console. "
-            "Returns a boot_id; linux_status(boot_id, wait_s=600) reports opensbi / kernel / shell milestones. "
-            "Then linux_cmd runs shell commands (busybox: devmem, hexdump of /dev/mem, cat, ...)."
+            "Boot Linux (alsaqr-software: OpenSBI fw_payload + DTB) on the board in the background: programs the "
+            "bitstream first unless program=false (current one, or bitstream=<.bit / build_id>), then either loads the "
+            "DTB and the payload over JTAG (~3 min for 15-20 MB; default: the bundle's prebuilt Linux, 2 CPUs) or, with "
+            "netboot=true, loads only the 216 KB network loader over JTAG and the board fetches the DTB and the payload "
+            "over its 1G Ethernet port from this machine (~30 s; default: the bundle's rebuilt Linux with the Ethernet "
+            "driver, 4 CPUs, eth0 = 10.42.0.2 on the private link to this machine's adapter at 10.42.0.1; needs the "
+            "Ethernet bitstream and the cable). Over JTAG it can write QoS tags into srmcfg (CSR 0x181) of given harts "
+            "before releasing them (srmcfg={'0': '0x30005'} = RCID 5, MCID 3 on hart 0; nothing else touches that CSR, "
+            "so every access of that hart carries the tag). Then it watches the console. Returns a boot_id; "
+            "linux_status(boot_id, wait_s=600) reports the milestones (link / transfer for the Ethernet boot, opensbi, "
+            "kernel, shell). Then linux_cmd runs shell commands (busybox: devmem, hexdump of /dev/mem, ifconfig, ping, "
+            "...), and the board answers ping / UDP / TCP from this machine at 10.42.0.2."
         ),
         "schema": {"type": "object", "properties": {
             "bitstream": {**_S, "description": "bitstream path or build_id (default: the programmed one)"},
             "program": {**_B, "description": "program the board first (default true)"},
             "srmcfg": {"type": "object", "description": "{hart: value} QoS tags written before release"},
             "payload": {**_S, "description": "fw_payload.elf (default: the bundle's prebuilt)"},
-            "dtb": {**_S, "description": "device tree blob (default: the bundle's prebuilt)"},
-            "wait_s": {**_I, "description": "block up to this many seconds (max 900) for the shell"}}},
+            "dtb": {**_S, "description": "device tree blob (default: the bundle's prebuilt, or the socket one with netboot)"},
+            "wait_s": {**_I, "description": "block up to this many seconds (max 900) for the shell"},
+            "netboot": {**_B, "description": "fetch the DTB and payload over Ethernet instead of JTAG (default false)"}}},
         "fn": lambda a: board.linux_boot(a.get("bitstream"), a.get("program", True), a.get("srmcfg"), a.get("payload"),
-                                         a.get("dtb"), a.get("wait_s", 0)),
+                                         a.get("dtb"), a.get("wait_s", 0), a.get("netboot", False)),
     },
     "linux_status": {
         "description": (
-            "State of a linux_boot: phase (openocd, loading, released, opensbi, kernel, shell, failed), seconds to each "
+            "State of a linux_boot: phase (openocd, loading, released, link and transfer for the Ethernet boot, opensbi, "
+            "kernel, shell, failed), seconds to each "
             "milestone, the srmcfg values GDB wrote, the kernel version line, the last console lines; wait_s (max 900) "
             "blocks until the shell is up or the boot fails. Without boot_id: the current session."
         ),
