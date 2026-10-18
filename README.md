@@ -315,7 +315,8 @@ payload over the board's 1G port instead of JTAG: `board_run` loads the small lo
 (`ALSAQR-NETBOOT?` on UDP 6969) and reads `alsaqr.dtb` and `fw_payload.bin` with TFTP (blksize 1428) before jumping
 into the payload exactly as the JTAG flow would. The server is unprivileged (no port 69, no root) and prints one
 line per event; `SERVED <file> <bytes> <ms>` is what callers parse, `--once` exits after the payload. The directory
-must hold the two files under those names (symlinks to the bundle's `install64` outputs are fine).
+must hold the two files under those names (symlinks to the bundle's `install64` outputs are fine). On the board the
+loader waits for a cable indefinitely ("no link yet (cable?)" every 15 s) and retries DHCP.
 
 ## Software and navigation tools
 

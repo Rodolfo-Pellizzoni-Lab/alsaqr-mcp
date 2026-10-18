@@ -21,6 +21,7 @@ from .config import ROOT, load
 MAX_WAIT_S = 900
 SUITES = {"soc": ["t_mem", "t_atomics", "t_smp", "t_irq", "t_socket", "t_qos", "t_cbqri", "t_dram", "t_dma", "t_iotag", "t_part", "t_eth"],
           "accel": ["example", "crc32"]}
+RUN_MS = {"t_eth": 90000}   # tests that need more than the default console window (t_eth waits for the PHY and listens on the LAN)
 
 
 def _err(error, fix, **extra):
@@ -237,7 +238,7 @@ def board_regress(suite: str | None = None, tests: list[str] | None = None, prog
     t0 = time.time()
     rows = []
     for t in tests:
-        r = board_run(t, sleep_ms=sleep_ms)
+        r = board_run(t, sleep_ms=sleep_ms or RUN_MS.get(t))
         if "error" in r and "run_id" not in r:
             rows.append({"test": t, "result": "build_error", "detail": r.get("error"), "errors": r.get("errors")})
             continue
