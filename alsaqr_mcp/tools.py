@@ -394,15 +394,30 @@ TOOLS = {
     },
     "linux_cmd": {
         "description": (
-            "Run a shell command on the booted Linux through the board console (typed one character at a time: the SoC "
-            "UART overruns on bursts) and return its output lines (up to 200). Blocking up to timeout_s. Examples: "
-            "devmem 0x103F0000 32 (the accelerator socket's QoS probe: the user field of this hart's last read, "
-            "port | rcid<<3 | mcid<<7 | at<<11), devmem 0x10401800 32 (LLC CBQRI capacity controller capabilities), "
-            "hexdump -s <phys> -n <bytes> /dev/mem > /dev/null (a cacheable read workload; the OpenSBI region is "
-            "PMP-protected)."
+            "Run a shell command on the booted Linux and return its output lines (up to 200). After an Ethernet boot it goes "
+            "over SSH to root@10.42.0.2 (dropbear, no password; fast, output intact, rc returned); otherwise, or with "
+            "via='uart', it is typed on the board console one character at a time (the SoC UART overruns on bursts). "
+            "Blocking up to timeout_s. busybox has devmem, hexdump, md5sum, nc (with -l), tftp, wget, ping; apmuctl drives "
+            "the APMU (apmuctl info). Examples: devmem 0x103F0000 32 (the accelerator socket's QoS probe: the user field of "
+            "this hart's last read, port | rcid<<3 | mcid<<7 | at<<11), hexdump -s <phys> -n <bytes> /dev/mem > /dev/null "
+            "(a cacheable read workload; the OpenSBI region is PMP-protected)."
         ),
-        "schema": {"type": "object", "properties": {"cmd": _S, "timeout_s": {**_I, "description": "default 30"}}, "required": ["cmd"]},
-        "fn": lambda a: board.linux_cmd(a["cmd"], a.get("timeout_s", 30)),
+        "schema": {"type": "object", "properties": {"cmd": _S, "timeout_s": {**_I, "description": "default 30"},
+                                                    "via": {"type": "string", "enum": ["auto", "ssh", "uart"], "description": "default auto: SSH when the board is on the link, else the console"}},
+                   "required": ["cmd"]},
+        "fn": lambda a: board.linux_cmd(a["cmd"], a.get("timeout_s", 30), a.get("via", "auto")),
+    },
+    "linux_copy": {
+        "description": (
+            "Copy a file between this machine and the booted Linux over the Ethernet link (scp to root@10.42.0.2; needs "
+            "linux_boot netboot=true). to_board=true (default): src is a path here, dst a path on the board (e.g. /tmp/x); "
+            "to_board=false: src is on the board, dst here. Returns bytes and ms (the link moves about 0.5 MB/s, CPU-bound "
+            "on the SoC). Check with linux_cmd(cmd='md5sum /tmp/x')."
+        ),
+        "schema": {"type": "object", "properties": {"src": _S, "dst": _S, "to_board": {"type": "boolean", "description": "default true"},
+                                                    "timeout_s": {**_I, "description": "default 300"}},
+                   "required": ["src", "dst"]},
+        "fn": lambda a: board.linux_copy(a["src"], a["dst"], a.get("to_board", True), a.get("timeout_s", 300)),
     },
     "board_stop": {
         "description": "Stop OpenOCD and the console capture (the FPGA keeps running whatever it runs).",

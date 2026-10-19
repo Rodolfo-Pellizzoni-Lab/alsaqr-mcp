@@ -292,7 +292,8 @@ console and GDB logs stay under `<state>/board/runs/<run_id>/`. Every run starts
 in:  { bitstream?, program? (true), srmcfg?: {hart: value}, payload?, dtb?, wait_s? }   -> { boot_id, phase, next }
 in:  { boot_id?, wait_s? }  -> { phase: openocd | loading | released | opensbi | kernel | shell | failed, milestones,
                                  srmcfg_written, kernel, console_tail, logs }
-in:  { cmd, timeout_s? }    -> { cmd, output: [lines] }
+in:  { cmd, timeout_s?, via? (auto|ssh|uart) } -> { cmd, via, rc?, output: [lines] }
+in:  linux_copy { src, dst, to_board? (true), timeout_s? } -> { copied, bytes, ms, mb_per_s }
 ```
 `linux_boot` reprograms the board (a Linux boot must start clean), loads the DTB and the OpenSBI + Linux payload
 over JTAG (~3 min at ~110 KB/s; config.json `linux` names the bundle's rebuilt payload and the socket device tree,
@@ -300,9 +301,14 @@ over JTAG (~3 min at ~110 KB/s; config.json `linux` names the bundle's rebuilt p
 finds there; the boot ROM leaves its own built-in one, which has no bootargs and no socket), optionally writes
 `srmcfg` (CSR 0x181, exposed to GDB as `$csr385`) on the given harts before releasing them, and records the console
 milestones. Harts 2-3 of this board cannot be halted once
-running, so the CSR is written before release rather than at run time. `linux_cmd` types a command one character at
-a time (the SoC UART overruns on bursts) and returns what the console captured up to the next prompt; busybox has
-`devmem` and `hexdump` (`-s`/`-n` in decimal), `/dev/mem` reads of the OpenSBI region are PMP-protected. Only one
+running, so the CSR is written before release rather than at run time. `linux_cmd` runs a command over SSH
+(`root@10.42.0.2`, dropbear without a password; each connection costs ~3 s of key exchange on the 50 MHz SoC) when the
+board was booted over Ethernet, and otherwise (or with `via=uart`) types it on the console one character at a time
+(the SoC UART overruns on bursts) and returns what the console captured up to the next prompt. `linux_copy` is scp in
+either direction (1 MiB in ~9 s: the SSH ciphers are CPU-bound on the SoC; `wget` from a server on this machine moves
+1 MiB in ~3.4 s and plain `nc` about the same). busybox has `devmem`, `hexdump` (`-s`/`-n` in decimal), `md5sum`,
+`dd`, `nc` (`-l -p PORT`, `-u`), `tftp`, `wget`, `ping`; `apmuctl` drives the APMU (`apmuctl info`, `apmuctl
+example_bubble` runs a known-good PE program); `/dev/mem` reads of the OpenSBI region are PMP-protected. Only one
 process may read the console: the tools kill a previous capture before starting their own.
 
 ### Booting over Ethernet: linux_boot netboot=true, scripts/netboot_server.py
@@ -314,12 +320,14 @@ boots the bundle's rebuilt Linux (cva6-sdk/install64: the kernel with the Xilinx
 config `board.linux.netboot`) over the board's 1G port: only the 216 KB loader `he-soc/software/netboot` goes over
 JTAG (on the harts OpenOCD can reach; the loader wakes the others), the board takes 10.42.0.2, finds this machine's
 server with a broadcast (`ALSAQR-NETBOOT?` on UDP 6969) and reads `alsaqr.dtb` and `fw_payload.bin` with TFTP
-(blksize 1428, 19.5 MB in ~26 s), then jumps into the payload with all four harts. Milestones from the release of the
-loader: link ~4 s, transfer done ~30 s, OpenSBI ~34 s, kernel ~46 s, shell ~90 s; `linux_status` reports them
-(`t_link_s`, `t_transfer_s`, `transfer_ms`, ...) and `linux_cmd` works as after a JTAG boot. Linux comes up with
-`smp: Brought up 1 node, 4 CPUs` and eth0 = 10.42.0.2 (static, `S45eth`), so this machine can ping it and talk to it
-(measured: ping 4-7 ms both ways; TCP from this machine `wget` 19.5 MB in 34 s, CPU-bound on the SoC; TFTP from the
-board `tftp -p ... 10.42.0.1 6969` 4 MB in 21 s; checksums intact).
+(blksize 1428, 22 MB in ~29 s), then jumps into the payload with all four harts. Milestones from the release of the
+loader: link ~4 s, transfer done ~34 s, OpenSBI ~38 s, kernel ~52 s, shell ~93 s; `linux_status` reports them
+(`t_link_s`, `t_transfer_s`, `transfer_ms`, ...). Linux (6.1.183 since 2026-10-19; the 6.1 axienet driver runs the
+SGMII PCS/PMA itself from the DTS's `pcs-handle`) comes up with `smp: Brought up 1 node, 4 CPUs`, eth0 = 10.42.0.2
+(static, `S45eth`, "Link is Up - 1Gbps/Full") and dropbear listening, so this machine can ping it, `ssh root@10.42.0.2`
+(no password), `scp -O` files and exchange packets with `nc` (measured: ping 4-8 ms both ways; scp 1 MiB ~9 s either
+way; `wget` from this machine 1 MiB in 3.4 s; TFTP from the board `tftp -p ... 10.42.0.1 6969` 4 MB in 21 s; MD5s
+intact).
 
 The link is private: a USB Ethernet adapter of this machine cabled to the VCU118's RJ45, this machine 10.42.0.1/24
 (a NetworkManager profile with a manual address: `sudo nmcli con mod "<profile>" ipv4.method manual ipv4.addresses

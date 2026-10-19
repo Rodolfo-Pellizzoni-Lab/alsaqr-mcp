@@ -380,19 +380,83 @@ def linux_status(boot_id: str | None = None, wait_s: int = 0) -> dict:
     return out
 
 
-def linux_cmd(cmd: str, timeout_s: int = 30) -> dict:
-    cfg = load()
+SSH_OPTS = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5"]
+
+
+def _board_ip(cfg) -> str:
+    return str(cfg.board_linux.get("netboot", {}).get("board_ip", "10.42.0.2"))
+
+
+def _ssh_up(ip: str) -> bool:
+    """True when dropbear on the board accepts a root login without a password (the rebuilt Linux after 2026-10-19)."""
+    r = subprocess.run(["ssh", *SSH_OPTS, f"root@{ip}", "true"], capture_output=True, text=True, timeout=15)
+    return r.returncode == 0
+
+
+def _shell_state(cfg):
     boot_id = _board_state(cfg).get("linux_boot")
     if not boot_id:
-        return _err("no Linux session", "linux_boot(...) and wait for phase 'shell'")
+        return (None, None), _err("no Linux session", "linux_boot(...) and wait for phase 'shell'")
     st = _boot_state(cfg, boot_id)
     if not st or st["phase"] != "shell":
-        return _err("Linux shell not up", f"linux_status(boot_id='{boot_id}', wait_s=600)")
+        return (None, None), _err("Linux shell not up", f"linux_status(boot_id='{boot_id}', wait_s=600)")
+    return (boot_id, st), None
+
+
+def linux_cmd(cmd: str, timeout_s: int = 30, via: str = "auto") -> dict:
+    """Run cmd on the booted Linux: over SSH when the board is on the Ethernet link (fast, output intact), else typed
+    on the console. via: auto | ssh | uart."""
+    cfg = load()
+    (boot_id, st), e = _shell_state(cfg)
+    if e:
+        return e
+    if via not in ("auto", "ssh", "uart"):
+        return _err("via must be auto, ssh or uart", "linux_cmd(cmd=..., via='auto')")
+    ip = _board_ip(cfg)
+    if via in ("auto", "ssh") and st.get("via") == "ethernet":
+        try:
+            r = subprocess.run(["ssh", *SSH_OPTS, f"root@{ip}", cmd], capture_output=True, text=True, timeout=int(timeout_s) + 10)
+            if r.returncode != 255:                       # 255 = ssh itself failed (no link, no server)
+                lines = (r.stdout + r.stderr).splitlines()
+                return {"cmd": cmd, "via": "ssh", "rc": r.returncode, "output": lines[:200], "truncated": len(lines) > 200}
+            fail = r.stderr.strip()
+        except subprocess.TimeoutExpired:
+            return _err(f"ssh root@{ip} timed out after {timeout_s} s", "linux_cmd(cmd=..., timeout_s=<more>)", cmd=cmd, via="ssh")
+        if via == "ssh":
+            return _err(f"ssh root@{ip} failed: {fail}", "the board's Linux must run dropbear (rebuilt bundle, 2026-10-19) and this "
+                        "machine must be 10.42.0.1; linux_cmd(cmd='ifconfig eth0', via='uart') to look from the console")
+    elif via == "ssh":
+        return _err("SSH needs the Ethernet boot", "linux_boot(netboot=true) puts the board on the link (10.42.0.2)")
     log = _board_dir(cfg) / "linux" / boot_id / "uart.log"
     r = subprocess.run(["bash", str(ROOT / "scripts" / "lx_cmd.sh"), str(log), cfg.board_uart, cmd, str(int(timeout_s))],
                        capture_output=True, text=True, timeout=int(timeout_s) + 30)
     lines = r.stdout.splitlines()
-    return {"cmd": cmd, "output": lines[:200], "truncated": len(lines) > 200}
+    return {"cmd": cmd, "via": "uart", "output": lines[:200], "truncated": len(lines) > 200}
+
+
+def linux_copy(src: str, dst: str, to_board: bool = True, timeout_s: int = 300) -> dict:
+    """scp a file to the board (to_board=True: src is a host path, dst a board path) or from it, over the Ethernet link."""
+    cfg = load()
+    _, e = _shell_state(cfg)
+    if e:
+        return e
+    ip = _board_ip(cfg)
+    if to_board and not Path(os.path.expanduser(src)).is_file():
+        return _err(f"{src}: no such file on this machine", "give the host path of the file to send")
+    a, b = (os.path.expanduser(src), f"root@{ip}:{dst}") if to_board else (f"root@{ip}:{src}", os.path.expanduser(dst))
+    t0 = time.time()
+    try:
+        r = subprocess.run(["scp", "-O", "-q", *SSH_OPTS, a, b], capture_output=True, text=True, timeout=int(timeout_s))
+    except subprocess.TimeoutExpired:
+        return _err(f"scp timed out after {timeout_s} s", "linux_copy(..., timeout_s=<more>); the link moves ~0.5 MB/s")
+    ms = int((time.time() - t0) * 1000)
+    if r.returncode != 0:
+        return _err(f"scp failed: {r.stderr.strip()}", "the board must have booted with linux_boot(netboot=true) and run dropbear "
+                    "(rebuilt bundle, 2026-10-19); linux_cmd(cmd='ls -l <dir>') to check the destination")
+    size = Path(os.path.expanduser(src if to_board else dst)).stat().st_size
+    return {"copied": "to board" if to_board else "from board", "src": src, "dst": dst, "bytes": size, "ms": ms,
+            "mb_per_s": round(size / 1048576 / max(ms, 1) * 1000, 2)}
 
 
 def board_stop() -> dict:

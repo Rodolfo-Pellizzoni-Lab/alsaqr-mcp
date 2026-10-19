@@ -91,7 +91,8 @@
     "payload": "~/alsaqr-software/linux/cva6-sdk/install64/fw_payload.elf",
     "dtb": "~/alsaqr-software/linux/cva6-sdk/install64/alsaqr-socket.dtb",
     "host_ip": "10.42.0.1",
-    "port": 6969
+    "port": 6969,
+    "board_ip": "10.42.0.2"
    }
   }
  }

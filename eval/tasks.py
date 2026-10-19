@@ -297,9 +297,23 @@ as seen from the Linux shell, and whether this machine can ping the board.""",
         "rubric": [
             (1, "Linux was booted with the files fetched over Ethernet (the network loader + boot server, not the JTAG "
                 "payload load) and reached a shell"),
-            (1, "the payload transfer took about 25-30 s (19.5 MB)"),
+            (1, "the payload transfer took about 25-35 s (22 MB)"),
             (1, "4 CPUs brought up, eth0 = 10.42.0.2"),
             (1, "the board answers ping from this machine (10.42.0.1 -> 10.42.0.2)"),
+        ],
+    },
+    "B4_linux_ssh_copy": {
+        "kind": "board linux", "timeout_s": 3000, "tools": ["linux_boot", "linux_status", "linux_copy", "linux_cmd"], "serial": True,
+        "extra_env": "{BOARD_LINE}",
+        "prompt": """Task: boot the alsaqr-software bundle's rebuilt Linux on the connected VCU118 over the board's Ethernet \
+port from this machine (not over JTAG), then: create a 1 MiB file of random bytes in {SB}, copy it to /tmp on the board, \
+and report the file's MD5 as computed on the board and on this machine (they must match), how long the copy took, the \
+kernel version Linux reports (uname -r), and the output of `apmuctl info` on the board.""",
+        "rubric": [
+            (1, "Linux booted over Ethernet (network loader + boot server) and reached a shell"),
+            (1, "the 1 MiB file reached the board and both MD5 values are reported and equal"),
+            (1, "the kernel version reported is 6.1.183"),
+            (1, "the apmuctl info output is reported (the APMU address map / PE state, not an error)"),
         ],
     },
 }
