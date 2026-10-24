@@ -297,8 +297,11 @@ TOOLS = {
             "opt": {**_S, "description": "opt_design directive (default Default)"},
             "place": {**_S, "description": "place_design directive (default AltSpreadLogic_high)"},
             "route": {**_S, "description": "route_design directive (default Default)"},
-            "reuse_synth": {**_S, "description": "build_id (or 'last') whose synthesized checkpoint to implement again"}}},
-        "fn": lambda a: fpga.fpga_build(a.get("tag"), a.get("opt"), a.get("place"), a.get("route"), a.get("reuse_synth")),
+            "reuse_synth": {**_S, "description": "build_id (or 'last') whose synthesized checkpoint to implement again"},
+            "env": {"type": "object", "description": "extra variables for the in-tree flow's environment, recorded with the "
+                    "build, e.g. {\"OPENDRAM\": \"1\"} for OpenDRAM as the DDR4 controller (hardware/ip_list/opendram)"}}},
+        "fn": lambda a: fpga.fpga_build(a.get("tag"), a.get("opt"), a.get("place"), a.get("route"), a.get("reuse_synth"),
+                                        a.get("env")),
     },
     "fpga_status": {
         "description": (

@@ -40,7 +40,7 @@ def _state(cfg, build_id):
 
 
 def fpga_build(tag: str | None = None, opt: str | None = None, place: str | None = None, route: str | None = None,
-               reuse_synth: str | None = None) -> dict:
+               reuse_synth: str | None = None, env: dict | None = None) -> dict:
     cfg = load()
     if not cfg.fpga_dir or not (cfg.fpga_dir / "run.tcl").exists():
         return _err("no FPGA flow", f"config fpga.dir ({cfg.fpga_dir}) has no run.tcl")
@@ -62,13 +62,15 @@ def fpga_build(tag: str | None = None, opt: str | None = None, place: str | None
                   "route": route or cfg.fpga_directives["route"]}
     state = {"build_id": build_id, "phase": "queued", "started": time.time(), "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
              "directives": directives, "soc_mhz": cfg.fpga_soc_mhz, "tree": _git(cfg),
-             "reused_synth": reuse_synth or None, "synth_dcp": synth_dcp or None}
+             "reused_synth": reuse_synth or None, "synth_dcp": synth_dcp or None, "env": env or {}}
     (bdir / "build.json").write_text(json.dumps(state, indent=1))
+    fpga_env = dict(cfg.fpga_env)
+    fpga_env.update({str(k): str(v) for k, v in (env or {}).items()})   # e.g. {"OPENDRAM": "1"}: run.tcl's switches
     env = dict(os.environ)
     env.update({"BUILD_DIR": str(bdir), "FPGA_DIR": str(cfg.fpga_dir), "SYNTH_DCP": synth_dcp,
                 "OPT_DIR": directives["opt"], "PLACE_DIR": directives["place"], "ROUTE_DIR": directives["route"],
                 "SOC_PERIOD_NS": f"{1000.0 / cfg.fpga_soc_mhz:g}", "VIVADO_SETTINGS": cfg.vivado_settings,
-                "FPGA_ENV": "\n".join(f"{k}={v}" for k, v in cfg.fpga_env.items()), "SCRIPTS": str(ROOT / "scripts"),
+                "FPGA_ENV": "\n".join(f"{k}={v}" for k, v in fpga_env.items()), "SCRIPTS": str(ROOT / "scripts"),
                 "HW_DIR": str(cfg.hardware), "BENDER_MAKE": cfg.fpga_bender_make})
     if cfg.fpga_path_prepend:
         env["PATH"] = cfg.fpga_path_prepend + ":" + env.get("PATH", "")

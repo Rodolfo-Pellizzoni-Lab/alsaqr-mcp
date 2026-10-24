@@ -257,7 +257,7 @@ board would silently mis-execute, the reset / stale-IP / congestion traps, the d
 
 ### fpga_build / fpga_status
 ```
-in:  { tag?, opt?, place?, route? (Vivado directives), reuse_synth?: build_id | "last" }
+in:  { tag?, opt?, place?, route? (Vivado directives), reuse_synth?: build_id | "last", env?: {NAME: value} }
 out: { build_id, phase, directives, expect, next }
 in:  { build_id?, wait_s? (max 900) }
 out: { build_id, phase, elapsed_s, wns_place?, timing: {setup_failing, hold_failing_outside_adv_timer, hold_failing_adv_timer,
@@ -271,6 +271,9 @@ State in `<state>/fpga/<build_id>/build.json`, Vivado logs and reports next to i
 no hold failures outside the adv_timer clock-as-data class, every net routed, MMCM output = the SoC clock. Post-route
 `phys_opt_design` is always followed by a re-route (alone it leaves real hold violations). Default directives are the
 ones that closed timing on this design; `SSI_SpreadLogic_high` + `AlternateCLBRouting` is the congestion fallback.
+`env` adds variables to the in-tree flow's environment on top of `fpga.env` and is recorded in `build.json`: `{"OPENDRAM": "1"}`
+builds with OpenDRAM as the DDR4 memory controller (he-soc `hardware/ip_list/opendram/README.md`; `run.tcl` makes and
+patches the MIG instead of reading the prebuilt IP).
 
 ### board_program / board_run / board_regress
 ```
