@@ -16,6 +16,14 @@ READELF=$BUNDLE/toolchain/rv64/bin/riscv64-unknown-elf-readelf; [ -x "$READELF" 
 
 phase openocd
 # a fresh OpenOCD for every run: a previous session can leave the debug module in a state a new one cannot examine
+# resumereq (bit 30) + hartsello (bits 25:16) + dmactive, then resumereq off, for harts 2 .. TOTAL_HARTS-1: the harts
+# OpenOCD does not drive are left halted by "reset halt" and never resumed otherwise (TOTAL_HARTS: cores of the bitstream)
+release_cmds() {
+  for h in $(seq 2 $(( ${TOTAL_HARTS:-4} - 1 ))); do
+    printf 'monitor riscv dmi_write 0x10 0x%08x\nmonitor riscv dmi_write 0x10 0x%08x\n' $(( 0x40000001 | (h << 16) )) $(( 0x00000001 | (h << 16) ))
+  done
+  echo "monitor riscv dmi_write 0x10 0x00000001"
+}
 start_openocd() {
   pkill -9 -x openocd 2>/dev/null; sleep 1
   nohup "$BUNDLE/openocd/bin/openocd" -s "$BUNDLE/openocd" -c "adapter speed 2000" -c "set _INTERFACE ftdi" \
@@ -56,11 +64,7 @@ load
 G
   [ $ZE -gt $ZS ] && echo "restore $RUN_DIR/bss_zero.bin binary $(printf '0x%x' $ZS)"
   if [ "${RELEASE_HARTS:-1}" = 1 ]; then cat <<G
-monitor riscv dmi_write 0x10 0x40020001
-monitor riscv dmi_write 0x10 0x00020001
-monitor riscv dmi_write 0x10 0x40030001
-monitor riscv dmi_write 0x10 0x00030001
-monitor riscv dmi_write 0x10 0x00000001
+$(release_cmds)
 monitor sleep 200
 G
   fi

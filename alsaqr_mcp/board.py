@@ -158,7 +158,8 @@ def board_run(binary: str, program: str | None = None, sleep_ms: int | None = No
     env = dict(os.environ)
     env.update({"RUN_DIR": str(rdir), "ELF": str(elf), "BUNDLE": str(cfg.board_bundle), "UART": cfg.board_uart,
                 "BAUD": str(cfg.board_baud), "SLEEP_MS": str(sleep_ms), "PEEKS": " ".join(peeks or []),
-                "RELEASE_HARTS": "1", "OPENOCD_CORES": str(cfg.board_openocd_cores), "SCRIPTS": str(ROOT / "scripts")})
+                "RELEASE_HARTS": "1", "OPENOCD_CORES": str(cfg.board_openocd_cores), "SCRIPTS": str(ROOT / "scripts"),
+                "TOTAL_HARTS": str(cfg.board_num_harts)})
     subprocess.run(["bash", str(ROOT / "scripts" / "board_run.sh")], env=env, capture_output=True, text=True,
                    timeout=sleep_ms / 1000 + 180)
     st = json.loads((rdir / "run.json").read_text())
@@ -324,7 +325,7 @@ def linux_boot(bitstream: str | None = None, program: bool = True, srmcfg: dict 
                 # over Ethernet only the loader is loaded, on the harts OpenOCD can reach (the rest sit in the boot ROM and
                 # the loader wakes them itself); a halt request left pending on an unreachable hart would catch it later
                 "NUM_HARTS": str(cfg.board_openocd_cores if netboot else lx.get("num_harts", 4)),
-                "SRMCFG_LIST": " ".join(tags), "SCRIPTS": str(ROOT / "scripts"), **nb_env})
+                "SRMCFG_LIST": " ".join(tags), "SCRIPTS": str(ROOT / "scripts"), "TOTAL_HARTS": str(cfg.board_num_harts), **nb_env})
     with open(bdir / "runner.log", "w") as out:
         subprocess.Popen(["setsid", "bash", str(ROOT / "scripts" / "linux_boot.sh")], env=env, stdout=out,
                          stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)

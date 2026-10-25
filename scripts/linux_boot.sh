@@ -14,6 +14,14 @@ source "$BUNDLE/source.sh" > /dev/null 2>&1
 export OPENOCD_SCRIPTS=$BUNDLE/openocd/tcl
 GDB=$BUNDLE/toolchain/rv64/bin/riscv64-unknown-elf-gdb; [ -x "$GDB" ] || GDB=riscv64-unknown-elf-gdb
 
+# resumereq (bit 30) + hartsello (bits 25:16) + dmactive, then resumereq off, for harts 2 .. TOTAL_HARTS-1: the harts
+# OpenOCD does not drive are left halted by "reset halt" and never resumed otherwise (TOTAL_HARTS: cores of the bitstream)
+release_cmds() {
+  for h in $(seq 2 $(( ${TOTAL_HARTS:-4} - 1 ))); do
+    printf 'monitor riscv dmi_write 0x10 0x%08x\nmonitor riscv dmi_write 0x10 0x%08x\n' $(( 0x40000001 | (h << 16) )) $(( 0x00000001 | (h << 16) ))
+  done
+  echo "monitor riscv dmi_write 0x10 0x00000001"
+}
 phase openocd
 pkill -9 -x openocd 2>/dev/null; pkill -f "scripts/uart_ca[p].py" 2>/dev/null; sleep 2   # one console reader at a time
 nohup "$BUNDLE/openocd/bin/openocd" -s "$BUNDLE/openocd" -c "adapter speed 2000" -c "set _INTERFACE ftdi" \
@@ -46,11 +54,7 @@ set remotetimeout 120
 target extended-remote :6699
 monitor reset halt
 load
-monitor riscv dmi_write 0x10 0x40020001
-monitor riscv dmi_write 0x10 0x00020001
-monitor riscv dmi_write 0x10 0x40030001
-monitor riscv dmi_write 0x10 0x00030001
-monitor riscv dmi_write 0x10 0x00000001
+$(release_cmds)
 monitor sleep 200
 monitor resume
 quit

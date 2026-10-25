@@ -55,6 +55,7 @@ class Config:
         self.board_uart = bd.get("uart", "/dev/ttyUSB3")
         self.board_baud = int(bd.get("baud", 38400))
         self.board_openocd_cores = int(bd.get("openocd_cores", 2))
+        self.board_num_harts = int(bd.get("num_harts", 4))        # harts of the programmed bitstream (board_run releases 2..n-1)
         self.board_ddr_wait_s = int(bd.get("ddr_wait_s", 30))
         self.board_sleep_ms = int(bd.get("run_ms", 8000))
         self.board_linux = dict(bd.get("linux", {}))
