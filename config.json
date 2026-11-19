@@ -75,7 +75,7 @@
  },
  "board": {
   "bundle": "~/alsaqr-software",
-  "uart": "/dev/ttyUSB3",
+  "uart": "/dev/serial/by-id/usb-Silicon_Labs_CP2105_Dual_USB_to_UART_Bridge_Controller_013148D3-if01-port0",
   "baud": 38400,
   "openocd_cores": 2,
   "ddr_wait_s": 30,
